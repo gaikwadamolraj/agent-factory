@@ -36,6 +36,8 @@ class Keys(StrEnum):
     CONFIG_VERSION = "config_version"
     LOGIN_ATTEMPTS = "login_attempts"
     REFRESH_TOKEN = "refresh_token"
+    KNOWLEDGE_GRAPH_VERSION = "knowledge_graph_version"
+    KNOWLEDGE_SEMANTIC_CACHE = "knowledge_semantic_cache"
 
 
 REGISTRY: dict[Keys, KeySpec] = {
@@ -60,6 +62,12 @@ REGISTRY: dict[Keys, KeySpec] = {
     Keys.REFRESH_TOKEN: KeySpec("auth:refresh:{jti}", 7 * 24 * 3600,
                                 "Allow-list of live refresh tokens (value = user id); deleted on rotation/logout",
                                 "orchestrator.auth"),
+    Keys.KNOWLEDGE_GRAPH_VERSION: KeySpec("knowledge:{graph_id}:version", None,
+                                          "Counter bumped whenever a tenant graph changes; part of every semantic "
+                                          "cache scope, so a changed graph never serves old answers", "knowledge"),
+    Keys.KNOWLEDGE_SEMANTIC_CACHE: KeySpec("knowledge:semcache", 24 * 3600,
+                                           "RedisVL index name + key prefix of the semantic answer cache (entries "
+                                           "carry a tenant-scope tag and expire after the TTL)", "knowledge"),
 }
 
 CONFIG_CHANGED_CHANNEL = f"{PREFIX}:config:changed"

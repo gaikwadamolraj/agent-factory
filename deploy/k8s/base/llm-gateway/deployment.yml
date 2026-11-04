@@ -1,0 +1,117 @@
+# LLM gateway: LiteLLM proxy, OpenAI-compatible, cluster-internal (Deployment + Service).
+# One replica: the router tracks requests in flight per backend in memory (least-busy routing). For more replicas,
+# give the router a shared Redis (router_settings.redis_host) so capacity is counted across replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ats-llm-gateway
+  labels:
+    app.kubernetes.io/name: ats-llm-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ats-llm-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ats-llm-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:v1.108.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/litellm/config.yaml
+            - --port
+            - "4000"
+            - --num_workers
+            - "1"
+          ports:
+            - name: http
+              containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: ats-llm-backends
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ats-llm-gateway-secrets
+                  key: master-key
+            - name: LMSTUDIO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ats-llm-gateway-secrets
+                  key: lmstudio-api-key
+            - name: VLLM_QWEN3_4B_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ats-llm-gateway-secrets
+                  key: vllm-qwen3-4b-api-key
+            - name: LITELLM_TELEMETRY
+              value: "False"
+            - name: LITELLM_LOG
+              value: "INFO"
+            - name: DISABLE_ADMIN_UI
+              value: "True"
+            - name: BACKGROUND_HEALTH_CHECK_MAX_TOKENS     # health probes generate 1 token: no load on the models
+              value: "1"
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: models
+              mountPath: /etc/litellm
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1536Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: models
+          configMap:
+            name: ats-llm-gateway-models
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ats-llm-gateway
+  labels:
+    app.kubernetes.io/name: ats-llm-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ats-llm-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -11,17 +11,15 @@ data:
   LOG_JSON: "true"
   OTEL_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://ats-lgtm:4318"
-  LLM_ENDPOINT: "http://172.21.208.1:1235/v1"
-  MODEL_NAME: "meta-llama-3.1-8b-instruct"
-  LLM_TIMEOUT_S: "300"
-  LLM_MAX_CONCURRENCY: "5"          # = LM Studio --parallel
+  LLM_MAX_CONCURRENCY: "5"          # assistant turns running at once (others queue)
   AGENT_MCP_URL: "http://ats-agent/mcp"
   COMPUTE_MCP_URL: "http://ats-compute/mcp"
+  KNOWLEDGE_MCP_URL: "http://ats-knowledge/mcp"   # empty = knowledge graph off
   MAX_STEPS_PER_REQUEST: "10"          # per user request, across all agents (LLM calls, tools, code runs)
   AGENT_TIMEOUT_S: "1800"
   SKILL_VERSION: ""                  # empty = agent default skill version
-  ACCESS_TOKEN_MINUTES: "15"
-  REFRESH_TOKEN_DAYS: "7"
+  ACCESS_TOKEN_MINUTES: "5"
+  REFRESH_TOKEN_DAYS: "1"
   COOKIE_SECURE: "true"
   CORS_ORIGINS: ""                   # browser calls go through the frontend proxy (same origin)
   MAX_PDF_MB: "10"

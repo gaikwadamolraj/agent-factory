@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from ats_common.fastapi_errors import install_error_handlers
+from ats_common.llm import Purpose, model_for
 from ats_common.logging import get_logger, log_event
 from ats_common.telemetry import instrument_asgi, setup_observability
 from orchestrator.api.v1 import router as v1_router
@@ -21,7 +22,7 @@ _ = OrchErrors  # register service error codes at import
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_container(settings)
-    log_event(log, "service.started", env=settings.app_env, model=settings.model_name,
+    log_event(log, "service.started", env=settings.app_env, chat_model=model_for(Purpose.CHAT),
               agent=settings.agent_mcp_url, skill=settings.skill_version or "agent default")
     yield
     await close_container()

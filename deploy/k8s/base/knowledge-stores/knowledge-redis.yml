@@ -1,0 +1,76 @@
+# Redis 8 for the knowledge service: semantic answer cache (vector search) and graph version counters.
+# A cache only: losing it costs extra LLM calls, never data, so it runs without a persistent volume and evicts the
+# least recently used keys at its memory limit. Password from ats-platform-secrets (key knowledge-redis-password).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ats-knowledge-redis
+  labels:
+    app.kubernetes.io/name: ats-knowledge-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ats-knowledge-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ats-knowledge-redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+      containers:
+        - name: redis
+          image: redis:8.2-alpine
+          imagePullPolicy: IfNotPresent
+          args:
+            - redis-server
+            - --requirepass
+            - $(KNOWLEDGE_REDIS_PASSWORD)
+            - --maxmemory
+            - 400mb
+            - --maxmemory-policy
+            - allkeys-lru
+            - --save
+            - ""
+          env:
+            - name: KNOWLEDGE_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ats-platform-secrets
+                  key: knowledge-redis-password
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: redis
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ats-knowledge-redis
+  labels:
+    app.kubernetes.io/name: ats-knowledge-redis
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ats-knowledge-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis

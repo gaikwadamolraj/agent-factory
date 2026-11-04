@@ -8,13 +8,20 @@ deploy/k8s/
 ├── base/
 │   ├── kustomization.yml        # namespace + observability + agent + orchestrator + frontend
 │   ├── namespace.yml
+│   ├── llm-config/              # ats-llm-config: model alias per purpose + per-client policy (all LLM users)
+│   ├── llm-gateway/             # LiteLLM gateway: litellm-config.yaml (THE model config), deployment.yml, secret.example.yml
 │   ├── agent/                   # config.yml (ConfigMap) + deployment.yml (Deployment + Service)
+│   ├── knowledge/               # knowledge MCP server: config.yml (shared ConfigMap) + deployment.yml + network-policy.yml
+│   ├── knowledge-worker/        # knowledge ingestion worker: deployment.yml (same image, no Service)
+│   ├── knowledge-stores/        # FalkorDB (StatefulSet + PVC) + Redis 8 semantic cache + network policies
 │   ├── orchestrator/            # config.yml + deployment.yml
 │   ├── frontend/                # config.yml + deployment.yml
 │   ├── observability/           # Grafana LGTM: config.yml (dashboard provider) + lgtm.yml + dashboards/*.json
 │   └── schema/                  # config.yml + job.yml (migration Job, applied separately by deploy.sh)
+├── keda/                        # Component: KEDA ScaledObject for the knowledge worker (see keda/README.md)
+├── keda-operator/               # KEDA operator itself (cluster-wide, pinned release; ./deploy.sh keda)
 └── overlays/
-    ├── dev/                     # APP_ENV=DEV, ingress (UI + Grafana); schema/ seeds demo tenants
+    ├── dev/                     # includes keda/; APP_ENV=DEV, ingress (UI + Grafana); schema/ seeds demo tenants
     └── prod/                    # template: APP_ENV=PROD, registry images, strict CORS, no demo data
 ```
 
@@ -24,10 +31,21 @@ deploy/k8s/
 
 | key | used by | value |
 |---|---|---|
-| `database-url` | schema, agent, orchestrator | `postgresql://USER:PASS@postgres-service.amol.svc.cluster.local:5432/ats_platform` |
+| `database-url` | schema, agent, orchestrator, knowledge | `postgresql://USER:PASS@postgres-service.amol.svc.cluster.local:5432/ats_platform` |
 | `redis-url` | agent, orchestrator | `redis://:PASS@redis-service.amol.svc.cluster.local:6379/1` |
-| `jwt-secret` | agent, orchestrator | >= 32 random chars (user tokens + service-to-service tokens) |
-| `llm-api-key` | agent, orchestrator | LM Studio accepts any value |
+| `jwt-secret` | agent, orchestrator, knowledge | >= 32 random chars (user tokens + service-to-service tokens) |
+| `falkordb-password` | falkordb, knowledge | URL-safe random string (hex), e.g. `openssl rand -hex 24` |
+| `knowledge-redis-password` | knowledge-redis, knowledge | URL-safe random string (hex); it is embedded in the knowledge `REDIS_URL` |
+
+Add the knowledge keys (once, before the first deploy of the knowledge service):
+
+```bash
+kubectl -n ats-platform patch secret ats-platform-secrets --type merge -p "{\"stringData\":{
+  \"falkordb-password\":\"$(openssl rand -hex 24)\",\"knowledge-redis-password\":\"$(openssl rand -hex 24)\"}}"
+```
+
+Changing `falkordb-password` later: FalkorDB keeps no password on disk (it is a start argument), so update the
+secret and restart `statefulset/ats-falkordb`, `deployment/ats-knowledge` and `deployment/ats-knowledge-worker`.
 | `grafana-admin-user` | lgtm | Grafana admin login (edits dashboards, manages Grafana users) |
 | `grafana-admin-password` | lgtm | strong password; without it the admin login stays locked |
 | `grafana-viewer-user` | lgtm | Grafana read-only login for everyone else |
@@ -41,6 +59,13 @@ kubectl -n ats-platform patch secret ats-platform-secrets --type merge -p '{"str
   "grafana-viewer-user":"<viewer>","grafana-viewer-password":"<password>"}}'
 kubectl -n ats-platform rollout restart deployment/ats-lgtm
 ```
+
+## Secret for the LLM gateway (separate, created once)
+
+`ats-llm-gateway-secrets` holds the gateway key and the backend/provider keys; template and command:
+[base/llm-gateway/secret.example.yml](base/llm-gateway/secret.example.yml). Keys: `master-key` (services send it as
+`LLM_GATEWAY_KEY`), `lmstudio-api-key`, `vllm-qwen3-4b-api-key`, plus one per hosted provider you enable.
+Models, aliases and the per-client policy: [docs/llm_gateway.md](../../docs/llm_gateway.md).
 
 ## Middlewares (namespace ats-platform)
 
@@ -78,7 +103,8 @@ comes from `DATABASE_NAME` in the ConfigMaps (`ats_platform`) and overrides the 
 ## Deploy
 
 ```bash
-./deploy.sh                      # schema job, then all services (dev overlay)
+./deploy.sh                      # KEDA (if missing), schema job, then all services (dev overlay)
+./deploy.sh keda                 # install / upgrade the KEDA operator
 ./deploy.sh schema               # re-run migrations / seed only
 ./deploy.sh orchestrator         # rebuild + roll out one service
 ```

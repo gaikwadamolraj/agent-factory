@@ -1,6 +1,5 @@
 """Agent settings (environment only; secrets from the k8s Secret)."""
 from functools import lru_cache
-from typing import Optional
 
 from ats_common.config import McpServiceSettings
 
@@ -8,15 +7,7 @@ from ats_common.config import McpServiceSettings
 class AgentSettings(McpServiceSettings):
     service_name: str = "ats-agent"
 
-    # LLM (LM Studio / any OpenAI-compatible server)
-    llm_endpoint: str
-    llm_api_key: str = "not-needed"
-    model_name: str = "meta-llama-3.1-8b-instruct"
-    llm_max_tokens: Optional[int] = None
-    llm_timeout_s: float = 300.0            # one structured call
-    llm_retry_attempts: int = 2             # bounded retries for transient failures
-    llm_breaker_failures: int = 5           # consecutive failures that open the LLM circuit
-    llm_breaker_reset_s: float = 30.0
+    # LLM: gateway, model alias, timeouts and breaker come from ats_common.llm (ConfigMap ats-llm-config)
 
     # Memory
     memory_ttl_seconds: int = 7 * 24 * 3600

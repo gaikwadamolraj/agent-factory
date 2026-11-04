@@ -27,6 +27,7 @@ from ats_agent.skills import load_skill
 from ats_agent.tools import HISTORY, WORKSPACE
 from ats_common.context import bind
 from ats_common.errors import AppError, Errors
+from ats_common.llm import Purpose, model_identity
 from ats_common.logging import get_logger, log_event
 from ats_common.resilience import RetryPolicy, is_llm_format_error, retry
 
@@ -114,9 +115,10 @@ class AgentService:
     async def _screen(self, tenant: Tenant, request_id: str, chat_id: str, job_description: str, resume_text: str,
                       skill_version: str, progress: Optional[ProgressFn]) -> ScreeningResult:
         skill = self._skill(skill_version)
-        model = build_model(self.settings)
-        runtime = StepRuntime(settings=self.settings, model=build_model(self.settings),
-                              model_name=self.settings.model_name, skill=skill, cache=self.cache, progress=progress)
+        model = build_model(tenant.client_id)
+        runtime = StepRuntime(settings=self.settings, model=model,
+                              model_name=model_identity(Purpose.SCREENING, tenant.client_id), skill=skill,
+                              cache=self.cache, progress=progress)
         agent, session_manager = build_agent(self.settings, tenant.session_id, skill, self.repository, model)
         agent.state.set(WORKSPACE, {"request_id": request_id, "chat_id": chat_id, "jd_text": job_description,
                                     "resume_text": resume_text, "corrections": [], "steps_by_agent": []})
@@ -172,10 +174,11 @@ class AgentService:
     async def _ask_once(self, tenant: Tenant, question: str) -> str:
         """One agent run (fresh model + agent per attempt, so a retry never reuses a broken loop)."""
         skill = self._skill("")
-        model = build_model(self.settings)
+        model = build_model(tenant.client_id)
         agent, _ = build_agent(self.settings, tenant.session_id, skill, self.repository, model)
-        runtime = StepRuntime(settings=self.settings, model=model, model_name=self.settings.model_name,
-                              skill=skill, cache=self.cache)
+        runtime = StepRuntime(settings=self.settings, model=model,
+                              model_name=model_identity(Purpose.SCREENING, tenant.client_id), skill=skill,
+                              cache=self.cache)
         result = await agent.invoke_async(question, invocation_state={"runtime": runtime})
         return str(result).strip()
 

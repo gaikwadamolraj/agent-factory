@@ -1,0 +1,16 @@
+# LLM gateway (LiteLLM proxy). Both ConfigMaps are generated with a content hash in their name, so editing
+# litellm-config.yaml or a backend address rolls the gateway automatically on the next deploy.
+# Secret: ats-llm-gateway-secrets (template: secret.example.yml - not applied by kustomize, values never committed).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yml
+  - network-policy.yml
+configMapGenerator:
+  - name: ats-llm-gateway-models          # THE model configuration: backends, aliases, routing, fallbacks
+    files:
+      - config.yaml=litellm-config.yaml
+  - name: ats-llm-backends                # where each backend runs (read by litellm-config.yaml via os.environ/...)
+    literals:
+      - LMSTUDIO_API_BASE=http://172.21.208.1:1235/v1
+      - VLLM_QWEN3_4B_API_BASE=http://192.168.0.120:8001/v1

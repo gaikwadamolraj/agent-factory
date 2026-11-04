@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "ATS orchestrator: FastAPI /api/v1 + LangGraph conversational assistant; screening agent over MCP"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "ats-common[fastapi]",
+    "ats-common[fastapi,mcp,llm]",
     "uvicorn>=0.30.0",
     "pymupdf>=1.26,<2",  # 2.x pulls onnxruntime + networkx (~80 MB) for layout features we do not use
     "langchain-openai>=0.3.0",

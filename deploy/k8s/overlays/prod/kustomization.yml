@@ -9,11 +9,16 @@ images:
   - name: ats-agent
     newName: registry.example.com/ats/ats-agent
     newTag: "0.2.0"
+  - name: ats-knowledge
+    newName: registry.example.com/ats/ats-knowledge
+    newTag: "0.1.0"
   - name: ats-orchestrator
     newName: registry.example.com/ats/ats-orchestrator
     newTag: "0.2.0"
   - name: ats-frontend
     newName: registry.example.com/ats/ats-frontend
     newTag: "0.2.0"
+components:
+  - ../../keda      # KEDA autoscaling of the knowledge worker (needs the KEDA operator, see keda/README.md)
 patches:
   - path: config-patch.yml

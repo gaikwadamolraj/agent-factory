@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool, tool
 
 from ats_common.db.repositories import TenantScope
 from ats_common.errors import AppError
+from ats_common.llm import Purpose, model_identity
 from ats_common.logging import get_logger, log_event
 from ats_common.redis_keys import Keys, build_key, digest, ttl
 from ats_common.security import UserClaims
@@ -17,7 +18,6 @@ from orchestrator.constants import DEFAULT_CHAT_TITLE, GAP_GRADES, MET_GRADES
 from orchestrator.container import get_container
 from orchestrator.errors import OrchErrors
 from orchestrator.models import Screening
-from orchestrator.models import DocumentKind
 from orchestrator.repositories import ChatRepository, DocumentRepository, ScreeningRepository
 from orchestrator.services import documents
 from orchestrator.assistant.calculator import calculate as run_calculation
@@ -40,6 +40,7 @@ class TurnContext:
     screening: Optional[dict] = None
     screening_id: Optional[int] = None
     tools_used: list[str] = field(default_factory=list)
+    record: dict = field(default_factory=dict)      # facts for the turn record (journey, grounding, memory, security)
     budget: StepBudget = field(default_factory=lambda: StepBudget(get_container().settings.max_steps_per_request))
 
     @property
@@ -74,7 +75,8 @@ async def perform_screening(ctx: TurnContext) -> dict:
     jd_hash = digest(jd_text)
     cache_key = build_key(Keys.SCREENING_RESULT, c.settings.app_env, client_id=ctx.scope.client_id,
                           project_id=ctx.scope.project_id,
-                          digest=digest(c.settings.skill_version or "default", jd_hash, resume.text_hash))
+                          digest=digest(c.settings.skill_version or "default", jd_hash, resume.text_hash,
+                                        model_identity(Purpose.SCREENING, ctx.scope.client_id)))
     cached = await c.redis.get(cache_key)
     if cached:
         result = json.loads(cached)
@@ -105,6 +107,7 @@ async def perform_screening(ctx: TurnContext) -> dict:
         await chats.touch(chat)
         ctx.screening_id = row.id
 
+    c.knowledge.remember_screening(ctx.scope, resume.id, result)   # background; no-op when disabled
     labels = {"client_id": str(ctx.scope.client_id), "project_id": str(ctx.scope.project_id)}
     metrics.screenings_total.add(1, {**labels, "recommendation": result["recommendation"]})
     metrics.screening_score.record(result["score"], labels)
@@ -187,15 +190,14 @@ def build_tools(ctx: TurnContext) -> list[BaseTool]:
         ctx.tracker.emit("tool:search", f"Searching the {where}...", 55)
         async with get_container().db.session() as session:
             chat = await ChatRepository(session, ctx.scope).get_owned(ctx.chat_id, ctx.user.user_id)
-        ids = [doc_id for kind, doc_id in ((DocumentKind.RESUME, chat.resume_document_id),
-                                           (DocumentKind.JD, chat.jd_document_id))
-               if doc_id and source in (kind.value, "both")]
+        ids = documents.chat_document_ids(chat, source)
         if not ids:
             return f"No {where} document in this chat yet."
-        hits = await documents.search(ctx.scope, ids, query[:500], get_container().settings.search_results)
+        settings = get_container().settings
+        hits = await documents.search(ctx.scope, ids, query[:500], settings.search_results)
         if not hits:
             return "Nothing relevant found in the documents."
-        return "\n\n".join(f"[{h.kind} #{h.chunk_index}] {h.content}" for h in hits)
+        return documents.format_hits(hits, settings.search_max_chars)
 
     @tool
     async def calculate(question: str) -> str:
@@ -214,7 +216,25 @@ def build_tools(ctx: TurnContext) -> list[BaseTool]:
         c = get_container()
         return await run_calculation(c.settings, c.compute, ctx.budget, question, data, roles)
 
-    return [screen_candidate, get_screening_details, ask_screening_agent, search_documents, calculate]
+    @tool
+    async def search_candidate_knowledge(question: str) -> str:
+        """Ask the project's candidate knowledge graph (built from every resume uploaded in this project and
+        earlier screening outcomes). Use it for questions across candidates ("who has led a migration?",
+        "which candidates hold certification X?") or about relations in a profile. Answers cite graph facts.
+
+        Args:
+            question: The question in plain words.
+        """
+        ctx.tools_used.append("search_candidate_knowledge")
+        ctx.tracker.emit("tool:knowledge", "Searching the candidate knowledge graph...", 55)
+        request_id = uuid.uuid4().hex
+        ctx.running.knowledge_request_ids.add(request_id)
+        answer = await get_container().knowledge.ask(ctx.scope, question, request_id)
+        ctx.running.knowledge_request_ids.discard(request_id)   # kept on cancellation (see perform_screening)
+        return answer
+
+    tools = [screen_candidate, get_screening_details, ask_screening_agent, search_documents, calculate]
+    return tools + [search_candidate_knowledge] if get_container().knowledge.enabled else tools
 
 
 async def _calculation_data(ctx: TurnContext) -> tuple[str, list[dict]]:

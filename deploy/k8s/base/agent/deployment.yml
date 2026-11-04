@@ -28,6 +28,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: ats-agent-config
+            - configMapRef:
+                name: ats-llm-config
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -39,11 +41,11 @@ spec:
                 secretKeyRef:
                   name: ats-platform-secrets
                   key: redis-url
-            - name: LLM_API_KEY
+            - name: LLM_GATEWAY_KEY
               valueFrom:
                 secretKeyRef:
-                  name: ats-platform-secrets
-                  key: llm-api-key
+                  name: ats-llm-gateway-secrets
+                  key: master-key
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:

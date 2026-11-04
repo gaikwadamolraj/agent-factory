@@ -5,7 +5,7 @@ functions or stack; the meaning lives only in this catalog. Every code has an HT
 agent can act on, a "what to do next" hint and whether retrying makes sense.
 
 DOMAIN   AUTH auth · USR user management · TEN tenant · VAL validation · CHAT chats · FILE uploads ·
-         SCR screening · AGT agent · CMP compute ·
+         SCR screening · AGT agent · CMP compute · KNW knowledge graph ·
          WFL workflow/turn · LLM model · DB database · SYS system
 CATEGORY MIS missing · INV invalid · EXP expired · FBD forbidden · NFD not found · CNF conflict · LIM limit ·
          TMO timeout · RTL rate limited · UNA unavailable · CAN cancelled · INT internal

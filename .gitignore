@@ -28,3 +28,6 @@ Thumbs.db
 # Local data
 *.log
 *.pdf
+
+# Claude Code personal overrides (the shared .claude/settings.json is committed)
+.claude/settings.local.json

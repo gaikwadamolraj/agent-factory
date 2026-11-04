@@ -18,6 +18,10 @@ screenings_total = _meter.create_counter("ats_screenings_total", description="Sc
 screening_score = _meter.create_histogram("ats_screening_score", description="Screening scores (0-100)")
 aborts_total = _meter.create_counter("ats_turn_aborts_total", description="Turns aborted by users")
 agent_calls_total = _meter.create_counter("ats_agent_calls_total", description="MCP calls to the agent by tool/outcome")
+injection_flags = _meter.create_counter("ats_prompt_injection_detected_total",
+                                       description="Untrusted text that tried to instruct an LLM, by source")
+score_corrections = _meter.create_counter("ats_score_claims_corrected_total",
+                                         description="Chat replies whose score did not match the stored screening")
 
 
 class ActiveUsers:

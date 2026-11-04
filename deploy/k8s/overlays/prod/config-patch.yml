@@ -14,3 +14,11 @@ metadata:
 data:
   APP_ENV: "PROD"
   LOG_LEVEL: "WARNING"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-knowledge-config
+data:
+  APP_ENV: "PROD"
+  LOG_LEVEL: "WARNING"

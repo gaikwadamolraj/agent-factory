@@ -19,6 +19,9 @@ class OrchErrors:
     MESSAGE_TOO_LONG = register("CHAT-LIM-0001", 413, "The message or job description is too long.",
                                 "Shorten the text and send it again.")
 
+    FILE_INSTRUCTIONS = register("FILE-INV-0004", 422, "The document contains text that tries to instruct the AI "
+                                 "(for example hidden, encoded or 'system' instructions about scoring).",
+                                 "Upload a clean copy of the document. The file was not stored or screened.")
     FILE_NOT_PDF = register("FILE-INV-0001", 415, "Only PDF files are accepted.", "Attach the resume as a PDF file.")
     FILE_TOO_LARGE = register("FILE-LIM-0001", 413, "The PDF is too large.", "Attach a PDF within the size limit.")
     FILE_TYPE_NOT_ALLOWED = register("FILE-INV-0003", 415, "This file type is not accepted for a job description.",

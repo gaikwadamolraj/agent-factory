@@ -1,0 +1,9 @@
+# KEDA operator (cluster-wide, namespace keda): the official release manifest, pinned to one version.
+# Installed by `./deploy.sh keda` (and automatically by ./deploy.sh when KEDA is missing). Apply by hand with:
+#   kubectl apply --server-side -k deploy/k8s/keda-operator
+# Upgrade: change the version in the URL (images inside are pinned to the same version), review the release notes,
+# then run ./deploy.sh keda. Separate from the app overlays because it is cluster infrastructure, not ats-platform.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/kedacore/keda/releases/download/v2.20.2/keda-2.20.2.yaml

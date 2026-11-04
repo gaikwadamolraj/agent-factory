@@ -1,0 +1,29 @@
+# Scales ats-knowledge-worker on the knowledge queue (table knowledge_episodes):
+#   backlog = episodes being extracted + episodes due now (queued rows waiting for a retry backoff do not count)
+#   replicas = ceil(backlog / targetQueryValue), between minReplicaCount and maxReplicaCount
+# 0 when idle (no worker pod, no polling). The first queued episode wakes one pod within pollingInterval.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ats-knowledge-worker
+spec:
+  scaleTargetRef:
+    name: ats-knowledge-worker
+  minReplicaCount: 0
+  maxReplicaCount: 1        # one LM Studio host = one worker. Raise only with more LLM capacity (see README.md)
+  pollingInterval: 15       # seconds between queue checks
+  cooldownPeriod: 300       # idle seconds before scaling back to 0
+  triggers:
+    - type: postgresql
+      metadata:
+        host: postgres-service.amol.svc.cluster.local   # FQDN: the KEDA operator runs in namespace keda
+        port: "5432"
+        dbName: ats_platform
+        sslmode: prefer
+        query: >-
+          SELECT COUNT(*) FROM knowledge_episodes
+          WHERE status = 'processing' OR (status = 'queued' AND available_at <= now())
+        targetQueryValue: "1"            # one episode per pod (WORKER_CONCURRENCY=1)
+        activationTargetQueryValue: "0"  # any backlog > 0 wakes the worker from 0
+      authenticationRef:
+        name: ats-knowledge-worker-postgres

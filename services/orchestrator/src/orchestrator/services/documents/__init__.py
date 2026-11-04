@@ -11,16 +11,16 @@ from typing import Optional
 
 from ats_common.db.repositories import TenantScope
 from ats_common.errors import AppError
+from ats_common.llm import embed_documents, embed_query, embedding_id
 from ats_common.logging import get_logger, log_event
-from ats_common.resilience import BreakerConfig, RetryPolicy, get_breaker, resilient_call
-from orchestrator.config import OrchestratorSettings
+from ats_common.prompt_safety import detect
+from orchestrator import metrics
 from orchestrator.container import get_container
 from orchestrator.errors import OrchErrors
 from orchestrator.models import Document, DocumentKind
 from orchestrator.repositories import ChunkHit, ChunkRepository, DocumentRepository
 from orchestrator.services.documents.blob_store import blob_store
 from orchestrator.services.documents.chunking import chunk_text
-from orchestrator.services.embeddings import get_embedding_client
 from orchestrator.services.pdf import InvalidPdf, parse_pdf
 
 log = get_logger(__name__)
@@ -55,16 +55,10 @@ def detect_type(filename: str, declared: Optional[str], data: bytes, allow_text:
     raise AppError(OrchErrors.FILE_NOT_PDF if not allow_text else OrchErrors.FILE_TYPE_NOT_ALLOWED)
 
 
-async def _embed(settings: OrchestratorSettings, texts: list[str]) -> tuple[Optional[list[list[float]]], Optional[str]]:
-    """Embeddings for chunks (resilient; returns (None, None) when the embedding service is unavailable)."""
-    loop = asyncio.get_running_loop()
-    breaker = get_breaker("embeddings", BreakerConfig(3, 60))
+async def _embed(texts: list[str]) -> tuple[Optional[list[list[float]]], Optional[str]]:
+    """Chunk vectors + the embedding identity; (None, None) when embeddings are unavailable (keyword search still works)."""
     try:
-        client = await loop.run_in_executor(None, get_embedding_client, settings)
-        vectors = await resilient_call(lambda: loop.run_in_executor(None, client.embeddings.embed_documents, texts),
-                                       op="embeddings.documents", timeout_s=120, retry=RetryPolicy(attempts=2),
-                                       breaker=breaker)
-        return vectors, client.model
+        return await embed_documents(texts), embedding_id()
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -72,18 +66,28 @@ async def _embed(settings: OrchestratorSettings, texts: list[str]) -> tuple[Opti
         return None, None
 
 
-async def embed_query(settings: OrchestratorSettings, query: str) -> tuple[Optional[list[float]], Optional[str]]:
-    loop = asyncio.get_running_loop()
+async def embed_query_vector(query: str) -> tuple[Optional[list[float]], Optional[str]]:
+    """Query vector + the embedding identity; (None, None) when embeddings are unavailable."""
     try:
-        client = await loop.run_in_executor(None, get_embedding_client, settings)
-        vector = await resilient_call(lambda: loop.run_in_executor(None, client.embeddings.embed_query, query),
-                                      op="embeddings.query", timeout_s=30, breaker=get_breaker("embeddings"))
-        return vector, client.model
+        return await embed_query(query), embedding_id()
     except asyncio.CancelledError:
         raise
     except Exception as e:
         log_event(log, "documents.query_embedding_skipped", error_type=type(e).__name__)
         return None, None
+
+
+def reject_injected(kind: DocumentKind, text_content: str) -> None:
+    """Refuse a document whose text tries to instruct the AI (fake system banners, override orders, scoring orders,
+    other languages, base64-hidden orders; also white/hidden PDF text, which extraction reads like any text).
+    Raised before anything is stored, indexed, sent to the knowledge graph or screened. Raises FILE-INV-0004."""
+    if not get_container().settings.reject_injected_documents:
+        return
+    report = detect(text_content)
+    if report.suspicious:
+        metrics.injection_flags.add(1, {"source": f"upload_{kind.value}"})
+        log_event(log, "security.document_rejected", kind=kind.value, kinds=list(report.kinds))
+        raise AppError(OrchErrors.FILE_INSTRUCTIONS)
 
 
 async def ingest(scope: TenantScope, user_id: int, kind: DocumentKind, upload: UploadedFile) -> tuple[Document, bool]:
@@ -96,6 +100,7 @@ async def ingest(scope: TenantScope, user_id: int, kind: DocumentKind, upload: U
         raise AppError(OrchErrors.FILE_NOT_PDF)
     if not text_content.strip():
         raise AppError(OrchErrors.FILE_NO_TEXT)
+    reject_injected(kind, text_content)
     text_hash = hashlib.sha256(text_content.encode("utf-8")).hexdigest()
 
     async with c.db.session() as session:
@@ -111,7 +116,7 @@ async def ingest(scope: TenantScope, user_id: int, kind: DocumentKind, upload: U
             pages=pages, text=text_content, text_hash=text_hash, blob_key=blob_key))
 
     chunks = chunk_text(text_content)
-    vectors, model = await _embed(c.settings, chunks)
+    vectors, model = await _embed(chunks)
     async with c.db.session() as session:
         await ChunkRepository(session, scope).replace_chunks(document, chunks, vectors, model)
     log_event(log, "documents.ingested", kind=kind.value, pages=pages, chunks=len(chunks), embedded=bool(vectors),
@@ -126,9 +131,45 @@ async def ingest_text(scope: TenantScope, user_id: int, kind: DocumentKind, text
     return document
 
 
-async def search(scope: TenantScope, document_ids: list[int], query: str, limit: int = 5) -> list[ChunkHit]:
-    """Hybrid search (vector + keyword, fused with RRF) over the given documents of the tenant."""
+def chat_document_ids(chat, source: str = "both") -> list[int]:
+    """Ids of the chat's resume and/or JD documents. `source`: resume | jd | both."""
+    pairs = ((DocumentKind.RESUME, chat.resume_document_id), (DocumentKind.JD, chat.jd_document_id))
+    return [doc_id for kind, doc_id in pairs if doc_id and source in (kind.value, "both")]
+
+
+async def search(scope: TenantScope, document_ids: list[int], query: str, limit: int = 5,
+                 pin_headers: bool = True) -> list[ChunkHit]:
+    """Hybrid search (vector + keyword, fused with RRF) over the given documents of the tenant.
+
+    With `pin_headers`, the first chunk of each document comes first (once): it holds the name, location and
+    contact details, which similarity search does not connect to questions such as "what is the candidate's name".
+    """
     c = get_container()
-    vector, model = await embed_query(c.settings, query)
+    vector, model = await embed_query_vector(query)
     async with c.db.session() as session:
-        return await ChunkRepository(session, scope).hybrid_search(document_ids, query, vector, model, limit=limit)
+        chunks = ChunkRepository(session, scope)
+        hits = await chunks.hybrid_search(document_ids, query, vector, model, limit=limit)
+        headers = await chunks.header_chunks(document_ids) if pin_headers else []
+    return merge_hits(headers, hits)
+
+
+def merge_hits(pinned: list[ChunkHit], ranked: list[ChunkHit]) -> list[ChunkHit]:
+    """Pinned chunks first, then ranked ones, without duplicates (same document and chunk index)."""
+    seen, merged = set(), []
+    for hit in [*pinned, *ranked]:
+        if (hit.document_id, hit.chunk_index) not in seen:
+            seen.add((hit.document_id, hit.chunk_index))
+            merged.append(hit)
+    return merged
+
+
+def format_hits(hits: list[ChunkHit], max_chars: int) -> str:
+    """Excerpts for an LLM prompt, labelled `[resume #0]`, cut at `max_chars` in total."""
+    parts, used = [], 0
+    for hit in hits:
+        part = f"[{hit.kind} #{hit.chunk_index}] {hit.content}"
+        if used + len(part) > max_chars:
+            break
+        parts.append(part)
+        used += len(part)
+    return "\n\n".join(parts)

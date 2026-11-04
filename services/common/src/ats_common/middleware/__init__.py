@@ -16,5 +16,6 @@ from ats_common.middleware.paths import PathRules
 from ats_common.middleware.tenant import TenantMiddleware
 from ats_common.middleware.tool_policy import ToolPolicyMiddleware
 
-__all__ = ["BodySizeLimitMiddleware", "JWTAuthMiddleware", "cookie", "PathRules", "RequestContextMiddleware", "SecurityHeadersMiddleware",
+__all__ = ["BodySizeLimitMiddleware", "JWTAuthMiddleware", "cookie", "PathRules",
+           "RequestContextMiddleware", "SecurityHeadersMiddleware",
            "ServiceAuthMiddleware", "TenantMiddleware", "ToolPolicyMiddleware"]

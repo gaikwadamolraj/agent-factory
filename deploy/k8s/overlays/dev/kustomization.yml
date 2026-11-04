@@ -6,5 +6,7 @@ namespace: ats-platform
 resources:
   - ../../base
   - ingress.yml
+components:
+  - ../../keda      # KEDA autoscaling of the knowledge worker (needs the KEDA operator, see keda/README.md)
 patches:
   - path: config-patch.yml

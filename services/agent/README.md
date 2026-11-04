@@ -1,6 +1,6 @@
 # agent service
 
-AWS Strands screening agent (LM Studio) behind an MCP server (`/mcp`, streamable HTTP).
+AWS Strands screening agent (models through the LLM gateway, `ats_common.llm`, alias `ats-screening`) behind an MCP server (`/mcp`, streamable HTTP).
 
 | MCP tool | Purpose |
 |---|---|

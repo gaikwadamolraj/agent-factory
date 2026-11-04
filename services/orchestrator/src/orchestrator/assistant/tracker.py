@@ -6,6 +6,7 @@ from typing import Optional
 
 from orchestrator.constants import TurnEvent
 
+MAX_STEPS = 50      # steps kept for the turn record
 
 class TurnTracker:
     def __init__(self, turn_id: str):
@@ -16,6 +17,7 @@ class TurnTracker:
         self.stage_started = self.started
         self.message = "Request received"
         self.progress = 0.0
+        self.steps: list[dict] = []         # [{stage, atS}] for the turn record (bounded by MAX_STEPS)
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.started, 1)
@@ -29,6 +31,8 @@ class TurnTracker:
         """A progress step (stage ids are listed in the frontend's ProgressTimeline)."""
         if stage != self.stage:
             self.stage_started = time.monotonic()
+            if len(self.steps) < MAX_STEPS:
+                self.steps.append({"stage": stage, "atS": self.elapsed()})
         self.stage, self.message = stage, message
         if progress is not None:
             self.progress = max(self.progress, float(progress))

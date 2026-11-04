@@ -1,0 +1,30 @@
+# Non-secret settings of the shared knowledge service (MCP server + worker share them).
+# Secrets come from ats-platform-secrets (database-url, jwt-secret, falkordb-password, knowledge-redis-password)
+# and ats-llm-gateway-secrets (master-key). LLM settings: shared ConfigMap ats-llm-config (base/llm-config).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-knowledge-config
+  labels:
+    app.kubernetes.io/name: ats-knowledge
+data:
+  APP_ENV: "DEV"
+  LOG_LEVEL: "INFO"
+  LOG_JSON: "true"
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://ats-lgtm:4318"
+  GRAPHITI_TELEMETRY_ENABLED: "false"
+  DATABASE_NAME: "ats_platform"
+  FALKORDB_HOST: "ats-falkordb"
+  FALKORDB_PORT: "6379"
+  GRAPH_CACHE_SIZE: "64"
+  GRAPH_TIMEOUT_S: "3600"
+  LLM_CONCURRENCY: "2"            # extraction uses 2 of LM Studio's 5 slots; the rest stay free for chat
+  SEMANTIC_CACHE_ENABLED: "true"
+  SEMANTIC_CACHE_DISTANCE: "0.08"
+  SEMANTIC_CACHE_TTL_S: "86400"
+  WORKER_CONCURRENCY: "1"
+  WORKER_LEASE_S: "4200"
+  WORKER_MAX_ATTEMPTS: "3"
+  ALLOWED_CALLERS: "ats-orchestrator"
+  TOOL_POLICY: "ats-orchestrator=ingest_episode|get_episode|search_knowledge|forget_source|update_entity|list_episodes|cancel_request"

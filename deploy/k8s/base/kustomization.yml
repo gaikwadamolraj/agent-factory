@@ -8,7 +8,12 @@ resources:
   - observability
   - sandbox
   - compute
+  - llm-config
+  - llm-gateway
   - agent
+  - knowledge-stores
+  - knowledge
+  - knowledge-worker
   - orchestrator
   - frontend
 labels:

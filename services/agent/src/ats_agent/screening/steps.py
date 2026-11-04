@@ -20,6 +20,7 @@ from ats_agent.schemas import (
 from ats_agent.screening import grounding, scoring
 from ats_agent.skills import SkillBundle
 from ats_common.logging import get_logger, log_event
+from ats_common.prompt_safety import detect, neutralize
 from ats_common.redis_keys import Keys, build_key, digest, ttl
 
 log = get_logger(__name__)
@@ -94,8 +95,8 @@ async def analyze_job_description(ctx: StepContext) -> str:
     if cached:
         analysis = JDAnalysis.model_validate(cached)
     else:
-        raw = await structured_call(ctx.runtime.settings, ctx.runtime.model,
-                                    ctx.runtime.skill.render("JD_ANALYSIS", JD=ws["jd_text"]), JDAnalysis,
+        raw = await structured_call(ctx.runtime.model,
+                                    ctx.runtime.skill.render("JD_ANALYSIS", JD=neutralize(ws["jd_text"])), JDAnalysis,
                                     "jd_analysis")
         analysis, dropped = grounding.verify_jd(raw, ws["jd_text"])
         ctx.correct([f"JD: dropped '{d}' (not named in the JD)" for d in dropped])
@@ -117,19 +118,36 @@ async def analyze_candidate_profile(ctx: StepContext) -> str:
     if cached:
         raw = CandidateProfile.model_validate(cached)
     else:
-        raw = await structured_call(ctx.runtime.settings, ctx.runtime.model,
-                                    ctx.runtime.skill.render("PROFILE_ANALYSIS", PROFILE=ws["resume_text"]),
+        raw = await structured_call(ctx.runtime.model,
+                                    ctx.runtime.skill.render("PROFILE_ANALYSIS", PROFILE=neutralize(ws["resume_text"])),
                                     CandidateProfile, "profile_analysis")
         ctx.cache_set("profile", ws["resume_text"], raw.model_dump())
     analysis = JDAnalysis.model_validate(ws["jd"]) if ws.get("jd") else None
     profile, dropped = grounding.verify_profile(raw, ws["resume_text"], analysis)
     ctx.correct([f"Profile: dropped '{d}' (not written in the resume)" for d in dropped])
+    profile = flag_injection(profile, ws["resume_text"])
     ws["profile"] = profile.model_dump()
     years = scoring.total_years(profile)
     await ctx.report("analyze_candidate_profile", f"Verified {len(profile.skills)} skills across {len(profile.roles)} roles")
     return (f"Profile analysed: {len(profile.skills)} verified skills, {len(profile.roles)} roles, "
             f"{years if years is not None else 'unknown'} years. Skills: "
             + ", ".join(s.name for s in profile.skills[:20]))
+
+
+def flag_injection(profile: CandidateProfile, resume_text: str) -> CandidateProfile:
+    """Deterministic integrity check: a resume that tries to instruct the screening AI is always flagged for the
+    recruiter (the LLM's own manipulation flag can be missed or talked out of). The score is not changed by it:
+    grades still need evidence quoted from the resume."""
+    report = detect(resume_text)
+    if not report.suspicious:
+        return profile
+    metrics.injection_flags.add(1, {"source": "resume"})
+    log_event(log, "screening.injection_detected", kinds=list(report.kinds))
+    note = ("The resume contains text that tries to instruct the screening system "
+            f"({', '.join(report.kinds)}). It was treated as plain text and ignored.")
+    existing = profile.manipulation_note if profile.manipulation_detected else ""
+    return profile.model_copy(update={"manipulation_detected": True,
+                                      "manipulation_note": f"{existing} {note}".strip()})
 
 
 # ---------------------------------------------------------------- 3. matching + score
@@ -160,7 +178,7 @@ async def match_requirements(ctx: StepContext) -> str:
                         for r in profile.roles) or "(none)",
         EDUCATION="; ".join(profile.education + profile.certifications) or "(none)",
     )
-    raw = await structured_call(ctx.runtime.settings, ctx.runtime.model, prompt, MatchResult, "matching")
+    raw = await structured_call(ctx.runtime.model, prompt, MatchResult, "matching")
     matches, corrections = grounding.verify_matches(raw, analysis, profile)
     ctx.correct(corrections)
 
@@ -218,7 +236,7 @@ async def write_verdict(ctx: StepContext) -> str:
         f"Education: {'; '.join(profile.education) or 'not stated'}",
         f"Certifications: {'; '.join(profile.certifications) or 'none'}",
     ]
-    draft = await structured_call(ctx.runtime.settings, ctx.runtime.model, ctx.runtime.skill.render(
+    draft = await structured_call(ctx.runtime.model, ctx.runtime.skill.render(
         "VERDICT", FACTS="\n".join(facts), RECOMMENDATION=rec,
         QUESTION_SKILLS="\n".join(f"   - {s}" for s in _question_skills(results))), VerdictDraft, "verdict")
 

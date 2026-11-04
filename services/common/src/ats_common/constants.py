@@ -40,6 +40,7 @@ COOKIE_REFRESH_TOKEN = "ats_refresh"
 JWT_AUDIENCE_USER = "ats-api"
 JWT_AUDIENCE_AGENT = "ats-agent"
 JWT_AUDIENCE_COMPUTE = "ats-compute"
+JWT_AUDIENCE_KNOWLEDGE = "ats-knowledge"
 JWT_AUDIENCE_REFRESH = "ats-refresh"
 JWT_ISSUER = "ats-platform"
 

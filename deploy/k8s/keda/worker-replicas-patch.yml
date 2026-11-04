@@ -1,0 +1,3 @@
+# KEDA owns the replica count; a fixed `replicas` in the Deployment would be re-applied on every deploy and fight it.
+- op: remove
+  path: /spec/replicas

@@ -5,7 +5,10 @@ from typing import Optional
 import redis.asyncio as aioredis
 
 from ats_common.db import Database, init_database
+from ats_common.knowledge.client import KnowledgeClient, KnowledgeClientConfig
 from orchestrator.config import OrchestratorSettings
+from orchestrator.constants import SERVICE_NAME_FOR_AGENT
+from orchestrator.knowledge import TalentKnowledge
 from orchestrator.metrics import ActiveUsers, register_gauges
 from orchestrator.services.agent_client import AgentClient, ComputeClient
 from orchestrator.services.llm_queue import LLMRequestQueue, get_llm_queue
@@ -22,6 +25,15 @@ class Container:
     turns: TurnRegistry
     queue: LLMRequestQueue
     active_users: ActiveUsers
+    knowledge: TalentKnowledge
+
+
+def _knowledge(settings: OrchestratorSettings) -> TalentKnowledge:
+    client = KnowledgeClient(KnowledgeClientConfig(url=settings.knowledge_mcp_url, caller=SERVICE_NAME_FOR_AGENT,
+                                                   timeout_s=settings.knowledge_timeout_s),
+                             settings.require_jwt_secret(), settings.jwt_algorithm) \
+        if settings.knowledge_mcp_url else None
+    return TalentKnowledge(settings, client)
 
 
 _container: Optional[Container] = None
@@ -37,7 +49,7 @@ async def init_container(settings: OrchestratorSettings) -> Container:
     _container = Container(settings=settings, db=init_database(settings), redis=redis_client,
                            agent=AgentClient(settings), compute=ComputeClient(settings),
                            turns=TurnRegistry(redis_client, settings.app_env),
-                           queue=queue, active_users=active_users)
+                           queue=queue, active_users=active_users, knowledge=_knowledge(settings))
     return _container
 
 

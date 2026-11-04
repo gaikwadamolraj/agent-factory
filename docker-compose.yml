@@ -1,4 +1,5 @@
-# Local stack: Postgres (pgvector) + Redis + schema job + agent + orchestrator + frontend + Grafana LGTM.
+# Local stack: Postgres (pgvector) + Redis + schema job + agent + knowledge (FalkorDB, Redis 8 cache) + orchestrator +
+# frontend + Grafana LGTM.
 # LM Studio runs on the host:  lms server start --bind 0.0.0.0 --port 1235
 #
 #   docker compose up --build
@@ -13,10 +14,13 @@ x-common: &common
   JWT_SECRET: local-dev-only-jwt-secret-change-me-0123456789
   COOKIE_SECURE: "false"
 
+# Every service reaches models only through the LLM gateway (aliases; see deploy/k8s/base/llm-config).
 x-llm: &llm
-  LLM_ENDPOINT: http://host.docker.internal:1235/v1
-  MODEL_NAME: meta-llama-3.1-8b-instruct
-  LLM_API_KEY: lm-studio
+  LLM_GATEWAY_URL: http://llm-gateway:4000/v1
+  LLM_GATEWAY_KEY: sk-local-dev-gateway-key
+  LLM_PROFILES: '{"high-quality":{"chat":"ats-chat-quality","answer":"ats-answer-quality","extraction":"ats-extraction-quality"}}'
+  LLM_CLIENT_PROFILES: '{"2":"high-quality"}'
+  LLM_TIMEOUT_S: "1800"
 
 services:
   postgres:
@@ -42,6 +46,51 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+  # LLM gateway (LiteLLM): same model configuration file as Kubernetes; backends on the host / LAN.
+  llm-gateway:
+    image: ghcr.io/berriai/litellm:v1.108.0
+    command:
+      - --config
+      - /etc/litellm/config.yaml
+      - --port
+      - "4000"
+    environment:
+      LITELLM_MASTER_KEY: sk-local-dev-gateway-key
+      LITELLM_TELEMETRY: "False"
+      DISABLE_ADMIN_UI: "True"
+      BACKGROUND_HEALTH_CHECK_MAX_TOKENS: "1"
+      LMSTUDIO_API_BASE: http://host.docker.internal:1235/v1
+      LMSTUDIO_API_KEY: lm-studio
+      VLLM_QWEN3_4B_API_BASE: http://192.168.0.120:8001/v1
+      VLLM_QWEN3_4B_API_KEY: none
+    volumes:
+      - ./deploy/k8s/base/llm-gateway/litellm-config.yaml:/etc/litellm/config.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4000:4000"
+
+  # Knowledge graph store: one graph per namespace + client + project. Browser UI off; password required.
+  falkordb:
+    image: falkordb/falkordb:v4.22.3
+    environment:
+      BROWSER: "0"
+      REDIS_ARGS: "--requirepass local-dev-falkordb --appendonly yes"
+    ports:
+      - "6390:6379"
+    volumes:
+      - falkordata:/var/lib/falkordb/data
+
+  # Semantic answer cache for the knowledge service (Redis 8 has vector search built in; database 0).
+  knowledge-redis:
+    image: redis:8.2-alpine
+    command:
+      - redis-server
+      - --requirepass
+      - local-dev-knowledge-cache
+    ports:
+      - "6380:6379"
 
   lgtm:
     image: grafana/otel-lgtm:0.8.1
@@ -97,6 +146,7 @@ services:
         - *llm
       REDIS_URL: redis://redis:6379/1
       AGENT_MCP_URL: http://agent:8001/mcp
+      KNOWLEDGE_MCP_URL: http://knowledge:8002/mcp
       LLM_MAX_CONCURRENCY: "5"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -105,8 +155,52 @@ services:
         condition: service_completed_successfully
       agent:
         condition: service_started
+      knowledge:
+        condition: service_started
     ports:
       - "5000:5000"
+
+  knowledge:
+    build:
+      context: .
+      dockerfile: services/knowledge/Dockerfile
+    environment: &knowledge-env
+      <<:
+        - *common
+        - *llm
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+      REDIS_URL: redis://:local-dev-knowledge-cache@knowledge-redis:6379/0
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      FALKORDB_PASSWORD: local-dev-falkordb
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+      falkordb:
+        condition: service_started
+      knowledge-redis:
+        condition: service_started
+    ports:
+      - "8002:8002"
+
+  knowledge-worker:
+    build:
+      context: .
+      dockerfile: services/knowledge/Dockerfile
+    command:
+      - python
+      - -m
+      - ats_knowledge.worker
+    environment:
+      <<: *knowledge-env
+      WORKER_CONCURRENCY: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      knowledge:
+        condition: service_started
 
   frontend:
     build:
@@ -120,3 +214,4 @@ services:
 
 volumes:
   pgdata:
+  falkordata:

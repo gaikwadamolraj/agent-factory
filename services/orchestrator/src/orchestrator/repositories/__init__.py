@@ -7,7 +7,7 @@ from sqlmodel import col, select
 
 from ats_common.db.repositories import TenantRepository
 from ats_common.db.tables import utcnow
-from orchestrator.models import Chat, ChatMessage, Document, Screening
+from orchestrator.models import Chat, ChatMemory, ChatMessage, ChatTurn, Document, Screening
 
 
 class ChatRepository(TenantRepository[Chat]):
@@ -79,8 +79,14 @@ WITH vec AS (
     LIMIT :candidates
 ),
 kw AS (
+    -- Any word of the question (OR), ranked by how many match and how close: an AND query of a natural question
+    -- ("what is the candidate name" -> 'candid' & 'name') almost never matches a chunk. Lexemes are already
+    -- stemmed ('simple' does not stem them again) and quoted (characters such as ':' or '&' cannot break the query).
     SELECT id, row_number() OVER (ORDER BY ts_rank_cd(tsv, q) DESC) AS rank
-    FROM document_chunks, websearch_to_tsquery('english', :query_text) AS q
+    FROM document_chunks,
+         to_tsquery('simple', coalesce((SELECT string_agg(quote_literal(lexeme), ' | ')
+                                        FROM unnest(tsvector_to_array(to_tsvector('english', :query_text))) AS lexeme),
+                                       '')) AS q
     WHERE client_id = :client_id AND project_id = :project_id AND document_id IN :document_ids AND tsv @@ q
     ORDER BY ts_rank_cd(tsv, q) DESC
     LIMIT :candidates
@@ -93,6 +99,12 @@ LEFT JOIN kw ON kw.id = c.id
 WHERE vec.id IS NOT NULL OR kw.id IS NOT NULL
 ORDER BY score DESC
 LIMIT :limit
+""").bindparams(bindparam("document_ids", expanding=True))
+
+_HEADER_SQL = text("""
+SELECT document_id, kind, chunk_index, content FROM document_chunks
+WHERE client_id = :client_id AND project_id = :project_id AND document_id IN :document_ids AND chunk_index = 0
+ORDER BY document_id
 """).bindparams(bindparam("document_ids", expanding=True))
 
 _INSERT_CHUNK_SQL = text("""
@@ -134,3 +146,36 @@ class ChunkRepository:
             "embedding_model": embedding_model or "", "query_text": query_text, "candidates": candidates,
             "limit": limit})
         return [ChunkHit(r.document_id, r.kind, r.chunk_index, r.content, float(r.score)) for r in result.all()]
+
+    async def header_chunks(self, document_ids: list[int]) -> list[ChunkHit]:
+        """First chunk of each document (name, title, location and contact details of a resume; role and company
+        of a JD). Similarity search ranks it poorly for questions like "what is the name", so callers pin it."""
+        if not document_ids:
+            return []
+        result = await self.session.exec(_HEADER_SQL, params={
+            "client_id": self.scope.client_id, "project_id": self.scope.project_id, "document_ids": document_ids})
+        return [ChunkHit(r.document_id, r.kind, r.chunk_index, r.content, 0.0) for r in result.all()]
+
+
+class ChatMemoryRepository(TenantRepository[ChatMemory]):
+    """Running memory per chat (one row per chat, tenant-scoped)."""
+    model = ChatMemory
+
+    async def for_chat(self, chat_id: str) -> Optional[ChatMemory]:
+        return await self.get_scoped(chat_id)
+
+    async def save(self, memory: ChatMemory) -> None:
+        memory.updated_at = utcnow()
+        self.session.add(memory)
+
+
+class ChatTurnRepository(TenantRepository[ChatTurn]):
+    """One JSON record per chat turn (audit, debugging, analytics)."""
+    model = ChatTurn
+
+    async def add(self, turn: ChatTurn) -> None:
+        self.session.add(turn)
+
+    async def for_chat(self, chat_id: str, limit: int = 50) -> Sequence[ChatTurn]:
+        statement = self.scoped().where(ChatTurn.chat_id == chat_id).order_by(col(ChatTurn.created_at).desc())
+        return (await self.session.exec(statement.limit(limit))).all()

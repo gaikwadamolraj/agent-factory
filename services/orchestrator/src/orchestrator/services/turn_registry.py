@@ -21,6 +21,7 @@ class RunningTurn:
     project_id: int
     task: Optional[asyncio.Task] = None
     agent_request_ids: set[str] = field(default_factory=set)   # in-flight agent requests to cancel on abort
+    knowledge_request_ids: set[str] = field(default_factory=set)   # in-flight knowledge searches to cancel
     aborted: bool = False
 
 

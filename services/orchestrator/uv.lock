@@ -110,12 +110,20 @@ fastapi = [
     { name = "fastapi" },
     { name = "python-multipart" },
 ]
+llm = [
+    { name = "openai" },
+]
+mcp = [
+    { name = "mcp" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "bcrypt", specifier = ">=4.2" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.10" },
+    { name = "openai", marker = "extra == 'llm'", specifier = ">=1.40" },
     { name = "opentelemetry-api", specifier = ">=1.27" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
     { name = "opentelemetry-instrumentation-asgi", specifier = ">=0.48b0" },
@@ -133,12 +141,13 @@ requires-dist = [
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "starlette", specifier = ">=0.37" },
 ]
-provides-extras = ["fastapi"]
+provides-extras = ["fastapi", "mcp", "llm"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "openai", specifier = ">=1.40" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
 ]
@@ -148,7 +157,7 @@ name = "ats-orchestrator"
 version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "ats-common", extra = ["fastapi"] },
+    { name = "ats-common", extra = ["fastapi", "llm", "mcp"] },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langgraph" },
@@ -165,7 +174,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ats-common", extras = ["fastapi"], directory = "../common" },
+    { name = "ats-common", extras = ["fastapi", "mcp", "llm"], directory = "../common" },
     { name = "langchain-mcp-adapters", specifier = ">=0.1.0" },
     { name = "langchain-openai", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.4.0" },

@@ -16,6 +16,11 @@ reused by several services it goes into **services/common** (the `ats-common` li
   parameters, never hard-coded.
 - Providers behind interfaces (vector store, blob store, LLM, embeddings, document sources): pgvector today,
   another backend tomorrow without touching callers.
+- LLM calls only through `ats_common.llm` and the LLM gateway, by purpose alias (`Purpose`); never a real model
+  name, endpoint or provider key in a service. Models are configured in the gateway (docs/llm_gateway.md).
+- Untrusted text (documents, chat messages, other sources) reaches an LLM only through `ats_common.prompt_safety`
+  (`neutralize`/`fence`); anything an LLM returns that matters (scores, decisions, numbers) is checked in code
+  against stored data before a user sees it. Prompts alone are not a control (docs/security_llm.md).
 - Agent frameworks (LangGraph, Strands, CrewAI, ADK): framework code stays in `agents/`/`tools/`; business logic
   stays framework-free so it can be reused or tested without the framework.
 - Look up current library docs with Context7 (MCP) before using an API you are not sure about.
@@ -38,7 +43,8 @@ reused by several services it goes into **services/common** (the `ats-common` li
 
 ## 5. Errors
 - Codes follow `{DOMAIN}-{CATEGORY}-{NNNN}`, e.g. `WFL-TMO-0002`. Codes never contain service or function names.
-  - DOMAIN: AUTH, TEN (tenant), VAL, CHAT, FILE, SCR (screening), AGT, WFL (workflow/turn), LLM, DB, SYS
+  - DOMAIN: AUTH, TEN (tenant), VAL, CHAT, FILE, SCR (screening), AGT, KNW (knowledge graph), WFL (workflow/turn),
+    LLM, DB, SYS
   - CATEGORY: MIS missing, INV invalid, EXP expired, FBD forbidden, NFD not found, CNF conflict, LIM limit,
     TMO timeout, RTL rate limited, UNA unavailable, CAN cancelled, INT internal
 - Shared codes: `ats_common.errors.Errors`; service codes: `<service>/errors.py` via `register(...)`.

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(**/node_modules/**)",
+      "Read(**/.venv/**)",
+      "Read(**/venv/**)",
+      "Read(**/__pycache__/**)",
+      "Read(**/*.pyc)",
+      "Read(**/.pytest_cache/**)",
+      "Read(**/.ruff_cache/**)",
+      "Read(**/.mypy_cache/**)",
+      "Read(**/.next/**)",
+      "Read(**/dist/**)",
+      "Read(**/build/**)",
+      "Read(**/coverage/**)",
+      "Read(**/htmlcov/**)",
+      "Read(**/*.egg-info/**)",
+      "Read(**/uv.lock)",
+      "Read(**/package-lock.json)",
+      "Read(**/pnpm-lock.yaml)",
+      "Read(**/yarn.lock)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Edit(**/node_modules/**)",
+      "Edit(**/.venv/**)",
+      "Edit(**/venv/**)",
+      "Edit(**/__pycache__/**)",
+      "Edit(**/.next/**)",
+      "Edit(**/dist/**)",
+      "Edit(**/build/**)",
+      "Edit(**/uv.lock)",
+      "Edit(**/package-lock.json)",
+      "Edit(**/.env)"
+    ]
+  },
+  "bashOutputMaxChars": 12000
+}

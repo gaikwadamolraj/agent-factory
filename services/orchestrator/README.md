@@ -14,4 +14,9 @@ FastAPI `/api/v1` + LangGraph conversational assistant.
 SSE events: `turn_started`, `user_message`, `progress`, `heartbeat`, then one of `message` / `aborted` / `error`.
 Middleware order and tenancy: [docs/impl_tenancy_auth.md](../../docs/impl_tenancy_auth.md). Abort: [docs/impl_abort.md](../../docs/impl_abort.md).
 
+Candidate knowledge graph (`src/orchestrator/knowledge/`, on when `KNOWLEDGE_MCP_URL` is set): a resume upload is
+queued for the shared knowledge service in the background, screening outcomes follow, and the assistant gets the
+`search_candidate_knowledge` tool. Guidance is versioned in `knowledge/guidance.py`. Details:
+[docs/impl_knowledge_graph.md](../../docs/impl_knowledge_graph.md).
+
 Local: `uv sync && PYTHONPATH=src uv run uvicorn orchestrator.main:app --port 5000` (env: `.env.example`).

@@ -11,7 +11,7 @@ Browser ─► frontend (Next.js) ─/api/backend/v1/*─► orchestrator (FastA
                      schema Job (Alembic + seed) ─► Postgres ats_platform ◄──────────────────────────────────────┘
                                                     Redis (cache, memory, abort flags, throttling)
            all services ─OTLP─► Grafana LGTM (Prometheus metrics, Loki logs, Tempo traces, "ATS Platform Overview" dashboard)
-           LLM + embeddings: LM Studio (OpenAI-compatible)
+           LLM + embeddings: LLM gateway (LiteLLM) -> LM Studio / vLLM / hosted, docs/llm_gateway.md
 ```
 
 | Path | What it is |
@@ -20,18 +20,25 @@ Browser ─► frontend (Next.js) ─/api/backend/v1/*─► orchestrator (FastA
 | [services/schema](services/schema) | Database service: creates `ats_platform`, Alembic migrations, demo seed (k8s Job) |
 | [services/orchestrator](services/orchestrator) | `/api/v1`: auth, chats (tenant-scoped), SSE turns, abort, LangGraph assistant |
 | [services/agent](services/agent) | Strands screening agent behind MCP (`screen_candidate`, `ask_agent`, `cancel_request`) |
+| [services/knowledge](services/knowledge) | Shared knowledge graph (Graphiti + FalkorDB, graph per tenant) + Redis semantic cache, behind MCP; ingestion worker |
 | [services/frontend](services/frontend) | Next.js UI |
 | [deploy/k8s](deploy/k8s) | Kustomize base + overlays (namespace `ats-platform`), Grafana LGTM + dashboard |
-| [docs](docs) | [access_and_onboarding.md](docs/access_and_onboarding.md) (roles, users, projects, Grafana logins, skills) and `impl_*.md` for complex flows - not shipped in images |
+| [docs](docs) | [access_and_onboarding.md](docs/access_and_onboarding.md) (roles, users, projects, Grafana logins, skills), [local_llm.md](docs/local_llm.md), knowledge graph: [basics](docs/knowledge_graph_basics.md), [ontology guide](docs/knowledge_ontology_guide.md), [roadmap](docs/roadmap_candidate_intelligence.md), [KEDA autoscaling](docs/keda_autoscaling.md), [LLM gateway](docs/llm_gateway.md), and `impl_*.md` for complex flows - not shipped in images |
 
 ## Run locally
 
 ```bash
-lms server start --bind 0.0.0.0 --port 1235            # LM Studio with meta-llama-3.1-8b-instruct + an embedding model
+lms server start --bind 0.0.0.0 --port 1235            # LM Studio with qwen2.5-14b-instruct-1m + an embedding model
+
+lms unload meta-llama-3.1-8b-instruct                   # free VRAM; embedding models stay loaded
+lms load qwen2.5-14b-instruct-1m --parallel 5 -c 65536 --ttl 86400 -y
+lms ps
+
 docker compose up --build
 ```
 UI http://localhost:3000/ats (users `acme.recruiter`, `acme.admin`, `globex.recruiter`, password `Demo@12345`),
 Grafana http://localhost:3001/grafana.
+Model setup, verification and the revert-to-Llama plan: [docs/local_llm.md](docs/local_llm.md).
 
 ## Deploy to k3d
 
@@ -53,3 +60,11 @@ Details, secret keys and access: [deploy/k8s/README.md](deploy/k8s/README.md).
 
 `{DOMAIN}-{CATEGORY}-{NNNN}` (e.g. `WFL-CAN-0001`), defined in `ats_common.errors` and each service's `errors.py`.
 Every error response: `{"error": {code, message, hint, retryable, retryAfter, requestId}}` - never a stack trace.
+
+
+# Tomorrows plan 
+1. allow to upload 1000 profile
+2. UI enahcnement proper look and feel
+3. allow user to find the profile for JD and get top listed 
+    1. find appropriate profile then run the check again JD and score it 
+    

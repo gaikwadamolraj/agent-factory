@@ -95,3 +95,35 @@ class Screening(SQLModel, table=True):
     skill: str = Field(max_length=128)
     result: dict = Field(sa_column=Column(JSONB, nullable=False))
     created_at: datetime = created_at_field()
+
+
+class ChatMemory(SQLModel, table=True):
+    """Running memory of one chat: what the recruiter asked about, wants and decided (never the assistant's claims
+    about the candidate, which come fresh from documents, screening and graph every turn)."""
+    __tablename__ = "chat_memory"
+
+    chat_id: str = Field(foreign_key="chats.id", primary_key=True, max_length=32)
+    client_id: int = Field(foreign_key="clients.id")
+    project_id: int = Field(foreign_key="projects.id")
+    summary: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    notes: dict = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False, server_default="{}"))
+    last_message_id: int = 0                       # newest chat message the summary covers
+    version: str = Field(default="", max_length=32)   # memory prompt version that wrote it
+    updated_at: datetime = updated_at_field()
+
+
+class ChatTurn(SQLModel, table=True):
+    """One JSON record per chat turn: journey, outcome, timings, tools, grounding, security events, model."""
+    __tablename__ = "chat_turns"
+
+    id: str = Field(primary_key=True, max_length=32)
+    client_id: int = Field(foreign_key="clients.id")
+    project_id: int = Field(foreign_key="projects.id")
+    chat_id: str = Field(foreign_key="chats.id", max_length=32)
+    user_id: int = Field(foreign_key="users.id")
+    journey: str = Field(max_length=32)
+    outcome: str = Field(max_length=16)
+    error_code: Optional[str] = Field(default=None, max_length=32)
+    duration_ms: int
+    record: dict = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False, server_default="{}"))
+    created_at: datetime = created_at_field()

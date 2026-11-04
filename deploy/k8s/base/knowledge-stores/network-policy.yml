@@ -1,0 +1,39 @@
+# The knowledge stores hold tenant data (graph) and cached answers: only the knowledge service and its worker may
+# connect to them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ats-falkordb-clients
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ats-falkordb
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: knowledge
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ats-knowledge-redis-clients
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ats-knowledge-redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: knowledge
+      ports:
+        - protocol: TCP
+          port: 6379

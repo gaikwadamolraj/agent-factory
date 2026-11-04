@@ -187,7 +187,7 @@ def _succeeded(output: str) -> bool:
 async def calculate(settings: OrchestratorSettings, compute: ComputeClient, budget: StepBudget, question: str,
                     data: str, roles: list[dict]) -> str:
     """Returns text for the assistant: the computed output, or why it could not be computed."""
-    author = build_llm(settings)
+    author = build_llm()
     code_roles = roles_for_code(roles)
     head = prelude(code_roles)
     feedback, last_output = "", ""
@@ -195,7 +195,7 @@ async def calculate(settings: OrchestratorSettings, compute: ComputeClient, budg
         if not budget.take("code_author"):
             break
         prompt = AUTHOR_PROMPT.format(role_count=len(code_roles), question=question, data=data, feedback=feedback)
-        code = extract_code(str((await invoke_llm(settings, author, prompt)).content))
+        code = extract_code(str((await invoke_llm(author, prompt)).content))
         if not budget.take("compute.execute_code"):
             break
         try:

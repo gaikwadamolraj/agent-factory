@@ -17,7 +17,10 @@ After changing the lib run `uv sync --reinstall-package ats-common` in each serv
 | `errors`, `fastapi_errors` | `{DOMAIN}-{CATEGORY}-{NNNN}` catalog, `AppError`, safe error envelope |
 | `resilience` | `resilient_call` (timeout, bounded retry), circuit breakers |
 | `redis_keys` | registered key patterns + TTLs, `ConfigVersion` change events |
-| `security` | bcrypt, user JWT (`aud=ats-api`), service JWT (`aud=ats-agent`) |
+| `security` | bcrypt, user JWT (`aud=ats-api`), service JWT (`aud=ats-agent`, `ats-compute`, `ats-knowledge`) |
+| `knowledge` | knowledge-service contract: wire models, ontology schema + validation, `KNW-*` errors; `knowledge.client.KnowledgeClient` (extra `mcp`) |
+| `llm` | the one LLM layer: settings (ats-llm-config), alias per purpose + per-client policy, guarded gateway client, structured completions, embeddings (extra `llm`; docs/llm_gateway.md) |
+| `mcp_client` | `McpToolClient`: call an internal MCP service with a service token, timeout, retry, breaker (extra `mcp`; MCP SDK 1.x and 2.x) |
 | `models` | `ApiModel` / `ApiResponse` (snake_case inside, camelCase on the wire) |
 | `db` | `Database`, tenant tables (clients, projects, users, members), `TenantScope`, repositories |
 | `middleware` | request context, security headers, JWT auth, tenant headers, service auth, tool policy |

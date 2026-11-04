@@ -15,3 +15,11 @@ metadata:
 data:
   APP_ENV: "DEV"
   LOG_LEVEL: "INFO"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-knowledge-config
+data:
+  APP_ENV: "DEV"
+  LOG_LEVEL: "INFO"

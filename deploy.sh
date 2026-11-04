@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Build, import into k3d and deploy the ATS platform with kustomize (namespace ats-platform).
 #
-#   ./deploy.sh                          # everything: schema job -> observability + all services
+#   ./deploy.sh                          # everything: KEDA (if missing) -> schema job -> observability + all services
+#   ./deploy.sh keda                     # install / upgrade the KEDA operator (deploy/k8s/keda-operator)
 #   ./deploy.sh schema                   # only (re)run the schema migration Job
 #   ./deploy.sh agent orchestrator       # rebuild + roll out selected services (others keep their current image)
 #   ENV=prod ./deploy.sh ...             # use deploy/k8s/overlays/prod (expects registry images, no k3d import)
 #
 # Env: CLUSTER_NAME (my-cluster), ENV (dev), IMAGE_TAG (default: timestamp).
-# Requires the Secret ats-platform-secrets in namespace ats-platform (see deploy/k8s/README.md).
+# Requires the Secrets ats-platform-secrets and ats-llm-gateway-secrets in namespace ats-platform (deploy/k8s/README.md).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,8 +17,8 @@ ENV="${ENV:-dev}"
 NAMESPACE="ats-platform"
 OVERLAY="$ROOT/deploy/k8s/overlays/$ENV"
 TAG="${IMAGE_TAG:-$(date +%Y%m%d-%H%M%S)}"
-SERVICES=(sandbox compute agent orchestrator frontend)
-ALL=(schema "${SERVICES[@]}")
+SERVICES=(sandbox compute agent knowledge orchestrator frontend)
+ALL=(keda schema "${SERVICES[@]}")
 
 log() { printf '\033[1;34m[deploy]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[deploy] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -30,6 +31,8 @@ for tool in docker kubectl; do command -v "$tool" >/dev/null || die "'$tool' is 
 [[ -d "$OVERLAY" ]] || die "overlay not found: $OVERLAY"
 kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE"
 kubectl -n "$NAMESPACE" get secret ats-platform-secrets >/dev/null 2>&1 || die "Secret ats-platform-secrets is missing in $NAMESPACE"
+kubectl -n "$NAMESPACE" get secret ats-llm-gateway-secrets >/dev/null 2>&1 || \
+  die "Secret ats-llm-gateway-secrets is missing: see deploy/k8s/base/llm-gateway/secret.example.yml"
 
 build() {  # build + import one image
   local svc="$1" image="ats-$1:$TAG"
@@ -45,11 +48,25 @@ build() {  # build + import one image
   fi
 }
 
+install_keda() {  # cluster-wide KEDA operator (scales the knowledge worker); idempotent
+  log "installing KEDA operator (deploy/k8s/keda-operator)"
+  kubectl apply --server-side --force-conflicts -k "$ROOT/deploy/k8s/keda-operator" >/dev/null
+  kubectl wait --for=condition=established --timeout=120s crd/scaledobjects.keda.sh crd/triggerauthentications.keda.sh
+  for deployment in keda-operator keda-metrics-apiserver keda-admission; do
+    kubectl -n keda rollout status "deployment/$deployment" --timeout=5m
+  done
+}
+
 current_image() {  # image currently deployed for a service (empty when not deployed yet)
   kubectl -n "$NAMESPACE" get deployment "ats-$1" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
 }
 
-for t in "${targets[@]}"; do build "$t"; done
+for t in "${targets[@]}"; do [[ "$t" == "keda" ]] || build "$t"; done
+
+# ---------------------------------------------------------------- KEDA (cluster infra; the overlays use it)
+if contains keda "${targets[@]}" || ! kubectl get crd scaledobjects.keda.sh >/dev/null 2>&1; then
+  install_keda
+fi
 
 # ---------------------------------------------------------------- schema job (runs before the services)
 if contains schema "${targets[@]}"; then
@@ -64,7 +81,9 @@ if contains schema "${targets[@]}"; then
 fi
 
 # ---------------------------------------------------------------- services
-if [[ ${#targets[@]} -gt 1 || "${targets[0]}" != "schema" ]]; then
+deploy_services=false
+for t in "${targets[@]}"; do contains "$t" "${SERVICES[@]}" && deploy_services=true; done
+if [[ "$deploy_services" == "true" ]]; then
   substitutions=()
   for svc in "${SERVICES[@]}"; do
     if contains "$svc" "${targets[@]}"; then
@@ -77,7 +96,9 @@ if [[ ${#targets[@]} -gt 1 || "${targets[0]}" != "schema" ]]; then
   done
   log "applying $OVERLAY"
   kubectl kustomize "$OVERLAY" | sed "${substitutions[@]}" | kubectl apply -f -
-  for deployment in ats-lgtm ats-sandbox ats-compute ats-agent ats-orchestrator ats-frontend; do
+  kubectl -n "$NAMESPACE" rollout status statefulset/ats-falkordb --timeout=5m
+  for deployment in ats-lgtm ats-llm-gateway ats-sandbox ats-compute ats-agent ats-knowledge-redis ats-knowledge ats-knowledge-worker \
+      ats-orchestrator ats-frontend; do
     kubectl -n "$NAMESPACE" rollout status "deployment/$deployment" --timeout=10m
   done
 fi
