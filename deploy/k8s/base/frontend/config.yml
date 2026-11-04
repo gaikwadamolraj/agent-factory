@@ -1,0 +1,10 @@
+# Frontend settings. The browser only talks to the frontend; /api/backend/* is proxied to the orchestrator.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-frontend-config
+  labels:
+    app.kubernetes.io/name: ats-frontend
+data:
+  INTERNAL_BACKEND_URL: "http://ats-orchestrator"
+  MAX_REQUEST_MB: "25"

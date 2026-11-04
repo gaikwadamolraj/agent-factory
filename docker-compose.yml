@@ -1,0 +1,122 @@
+# Local stack: Postgres (pgvector) + Redis + schema job + agent + orchestrator + frontend + Grafana LGTM.
+# LM Studio runs on the host:  lms server start --bind 0.0.0.0 --port 1235
+#
+#   docker compose up --build
+#   UI       http://localhost:3000/ats      (acme.recruiter / acme.admin / globex.recruiter, password Demo@12345)
+#   Grafana  http://localhost:3001/grafana  (dashboard "ATS Platform Overview")
+x-common: &common
+  APP_ENV: DEV
+  LOG_JSON: "true"
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+  DATABASE_URL: postgresql://ats:ats@postgres:5432/ats_platform
+  JWT_SECRET: local-dev-only-jwt-secret-change-me-0123456789
+  COOKIE_SECURE: "false"
+
+x-llm: &llm
+  LLM_ENDPOINT: http://host.docker.internal:1235/v1
+  MODEL_NAME: meta-llama-3.1-8b-instruct
+  LLM_API_KEY: lm-studio
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ats
+      POSTGRES_PASSWORD: ats
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - -U
+        - ats
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  lgtm:
+    image: grafana/otel-lgtm:0.8.1
+    environment:
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:3001/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    ports:
+      - "3001:3000"
+      - "4318:4318"
+    volumes:
+      - ./deploy/k8s/base/observability/dashboards:/var/lib/ats-dashboards:ro
+      - ./deploy/compose/grafana-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/ats-platform.yaml:ro
+
+  schema:
+    build:
+      context: .
+      dockerfile: services/schema/Dockerfile
+    environment:
+      <<: *common
+      SEED_DEMO_DATA: "true"
+      OTEL_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  agent:
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+    environment:
+      <<:
+        - *common
+        - *llm
+      REDIS_URL: redis://redis:6379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    ports:
+      - "8001:8001"
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    environment:
+      <<:
+        - *common
+        - *llm
+      REDIS_URL: redis://redis:6379/1
+      AGENT_MCP_URL: http://agent:8001/mcp
+      LLM_MAX_CONCURRENCY: "5"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+      agent:
+        condition: service_started
+    ports:
+      - "5000:5000"
+
+  frontend:
+    build:
+      context: services/frontend
+    environment:
+      INTERNAL_BACKEND_URL: http://orchestrator:5000
+    depends_on:
+      - orchestrator
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

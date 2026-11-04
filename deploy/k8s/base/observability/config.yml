@@ -1,0 +1,85 @@
+# Grafana settings, dashboard provider and start script. Datasources (uid prometheus / loki / tempo) come
+# pre-provisioned with the grafana/otel-lgtm image.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-grafana-settings
+  labels:
+    app.kubernetes.io/name: ats-lgtm
+data:
+  GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
+  GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+  GF_AUTH_ANONYMOUS_ENABLED: "false"     # sign-in required (the image default is anonymous Admin)
+  GF_USERS_ALLOW_SIGN_UP: "false"
+  GF_USERS_AUTO_ASSIGN_ORG_ROLE: "Viewer"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-grafana-provisioning
+  labels:
+    app.kubernetes.io/name: ats-lgtm
+data:
+  ats-platform.yaml: |
+    apiVersion: 1
+    providers:
+      - name: ats-platform
+        folder: ATS
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/ats-dashboards
+---
+# Replaces the image's run-grafana.sh, which exports anonymous Admin access and would override the settings above.
+# Admin:  grafana-admin-user / grafana-admin-password from ats-platform-secrets (edit dashboards, manage users).
+# Viewer: grafana-viewer-user / grafana-viewer-password (read-only), created or updated once Grafana is up.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-grafana-start
+  labels:
+    app.kubernetes.io/name: ats-lgtm
+data:
+  run-grafana.sh: |
+    #!/bin/bash
+    source ./logging.sh
+
+    export GF_AUTH_ANONYMOUS_ENABLED=false
+    export GF_PATHS_HOME=/data/grafana
+    export GF_PATHS_DATA=/data/grafana/data
+    export GF_PATHS_PLUGINS=/data/grafana/plugins
+    export GF_SECURITY_ADMIN_USER="${GF_SECURITY_ADMIN_USER:-admin}"
+    if [ -z "${GF_SECURITY_ADMIN_PASSWORD:-}" ]; then
+      echo "WARN grafana-admin-password is missing in ats-platform-secrets: admin sign-in stays locked until it is set" >&2
+      GF_SECURITY_ADMIN_PASSWORD="$(head -c 32 /dev/urandom | base64)"
+      export GF_SECURITY_ADMIN_PASSWORD
+    fi
+
+    GRAFANA_API="http://localhost:3000/grafana/api"
+    esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+    api() {  # api METHOD PATH [JSON]; admin credentials go through stdin, never on the command line
+      printf 'user = "%s:%s"\n' "$(esc "$GF_SECURITY_ADMIN_USER")" "$(esc "$GF_SECURITY_ADMIN_PASSWORD")" |
+        curl -s -K - -X "$1" -H 'Content-Type: application/json' ${3:+-d "$3"} "$GRAFANA_API$2"
+    }
+    ensure_viewer() {
+      [ -n "${GRAFANA_VIEWER_USER:-}" ] && [ -n "${GRAFANA_VIEWER_PASSWORD:-}" ] || return 0
+      until curl -sf "$GRAFANA_API/health" >/dev/null; do sleep 2; done
+      local login password id
+      login="$(esc "$GRAFANA_VIEWER_USER")"
+      password="$(esc "$GRAFANA_VIEWER_PASSWORD")"
+      if api POST /admin/users "{\"name\":\"$login\",\"login\":\"$login\",\"password\":\"$password\"}" | grep -q '"id"'; then
+        echo "grafana viewer account created"
+        return 0
+      fi
+      id="$(api GET "/users/lookup?loginOrEmail=$GRAFANA_VIEWER_USER" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')"
+      if [ -n "$id" ] && api PUT "/admin/users/$id/password" "{\"password\":\"$password\"}" | grep -q 'updated'; then
+        echo "grafana viewer account updated"
+      else
+        echo "WARN grafana viewer account could not be created" >&2
+      fi
+    }
+    ensure_viewer &
+
+    cd ./grafana
+    run_with_logging "Grafana ${GRAFANA_VERSION}" "${ENABLE_LOGS_GRAFANA:-false}" ./bin/grafana server

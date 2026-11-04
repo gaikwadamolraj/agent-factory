@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: ats-platform
+    folder: ATS
+    type: file
+    options:
+      path: /var/lib/ats-dashboards

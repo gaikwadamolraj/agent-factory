@@ -1,0 +1,19 @@
+# Production overlay (template): APP_ENV=PROD disables /docs, X-Served-By and permissive CORS; images come from a
+# registry; set CORS_ORIGINS and your real hosts before use.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ats-platform
+resources:
+  - ../../base
+images:
+  - name: ats-agent
+    newName: registry.example.com/ats/ats-agent
+    newTag: "0.2.0"
+  - name: ats-orchestrator
+    newName: registry.example.com/ats/ats-orchestrator
+    newTag: "0.2.0"
+  - name: ats-frontend
+    newName: registry.example.com/ats/ats-frontend
+    newTag: "0.2.0"
+patches:
+  - path: config-patch.yml

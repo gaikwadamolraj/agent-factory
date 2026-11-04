@@ -1,0 +1,15 @@
+# Schema Job for dev: migrations + demo tenants/users (SEED_DEMO_DATA=true).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ats-platform
+resources:
+  - ../../../base/dependencies
+  - ../../../base/schema
+patches:
+  - target:
+      kind: ConfigMap
+      name: ats-schema-config
+    patch: |-
+      - op: replace
+        path: /data/SEED_DEMO_DATA
+        value: "true"

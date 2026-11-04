@@ -1,0 +1,15 @@
+# Schema job settings. DATABASE_URL (target: ats_platform) comes from ats-platform-secrets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-schema-config
+  labels:
+    app.kubernetes.io/name: ats-schema
+data:
+  APP_ENV: "DEV"
+  LOG_LEVEL: "INFO"
+  LOG_JSON: "true"
+  CREATE_DATABASE: "true"       # CREATE DATABASE ats_platform when missing
+  MAINTENANCE_DATABASE: "postgres"
+  SEED_DEMO_DATA: "false"       # overlays/dev turns this on; never in PROD
+  DATABASE_NAME: "ats_platform"    # overrides the database name in the secret's database-url

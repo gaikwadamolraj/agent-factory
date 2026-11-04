@@ -1,0 +1,14 @@
+[project]
+name = "ats-schema"
+version = "0.1.0"
+description = "Database schema service for ats_platform: creates the database, runs Alembic migrations, seeds demo data"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "ats-common",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "sqlmodel>=0.0.22",
+]
+
+[tool.uv.sources]
+ats-common = { path = "../common", editable = false }

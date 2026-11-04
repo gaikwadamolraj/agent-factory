@@ -1,0 +1,30 @@
+# Non-secret settings of the orchestrator. Secrets come from ats-platform-secrets (see deployment.yml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ats-orchestrator-config
+  labels:
+    app.kubernetes.io/name: ats-orchestrator
+data:
+  APP_ENV: "DEV"
+  LOG_LEVEL: "INFO"
+  LOG_JSON: "true"
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://ats-lgtm:4318"
+  LLM_ENDPOINT: "http://172.21.208.1:1235/v1"
+  MODEL_NAME: "meta-llama-3.1-8b-instruct"
+  LLM_TIMEOUT_S: "300"
+  LLM_MAX_CONCURRENCY: "5"          # = LM Studio --parallel
+  AGENT_MCP_URL: "http://ats-agent/mcp"
+  COMPUTE_MCP_URL: "http://ats-compute/mcp"
+  MAX_STEPS_PER_REQUEST: "10"          # per user request, across all agents (LLM calls, tools, code runs)
+  AGENT_TIMEOUT_S: "1800"
+  SKILL_VERSION: ""                  # empty = agent default skill version
+  ACCESS_TOKEN_MINUTES: "15"
+  REFRESH_TOKEN_DAYS: "7"
+  COOKIE_SECURE: "true"
+  CORS_ORIGINS: ""                   # browser calls go through the frontend proxy (same origin)
+  MAX_PDF_MB: "10"
+  MAX_REQUEST_MB: "25"
+  BLOB_BACKEND: "postgres"
+  DATABASE_NAME: "ats_platform"    # overrides the database name in the secret's database-url

@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.env*
+k8s/
+deploy.sh
+Dockerfile
+.dockerignore
+*.md

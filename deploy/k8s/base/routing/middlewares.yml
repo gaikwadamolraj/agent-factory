@@ -1,0 +1,31 @@
+# Traefik middlewares managed by this repo (referenced as ats-platform-<name>@kubernetescrd).
+# Names start with "ats-" so applying never overwrites the manually created middlewares in this namespace
+# (see deploy/k8s/README.md -> Middlewares for the duplicates and why these are used for the UI routes).
+# No 'buffering' middleware: it also buffers responses and would break the streamed (SSE) chat answers.
+# Upload size is enforced by the frontend proxy (413) and the orchestrator (FILE-LIM-0001).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ats-security-headers
+spec:
+  headers:
+    contentTypeNosniff: true
+    frameDeny: true
+    browserXssFilter: true
+    referrerPolicy: strict-origin-when-cross-origin
+    contentSecurityPolicy: >-
+      default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+      img-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; object-src 'self' blob:
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ats-rate-limit
+spec:
+  rateLimit:
+    average: 20
+    burst: 40
+    period: 1s
+    sourceCriterion:
+      ipStrategy:
+        depth: 2

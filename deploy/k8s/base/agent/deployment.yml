@@ -1,0 +1,89 @@
+# Screening agent (MCP server, cluster-internal only) - Deployment + Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ats-agent
+  labels:
+    app.kubernetes.io/name: ats-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ats-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ats-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: agent
+          image: ats-agent:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: ats-agent-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ats-platform-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ats-platform-secrets
+                  key: redis-url
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ats-platform-secrets
+                  key: llm-api-key
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ats-platform-secrets
+                  key: jwt-secret
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ats-agent
+  labels:
+    app.kubernetes.io/name: ats-agent
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ats-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

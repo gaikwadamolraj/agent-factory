@@ -1,0 +1,17 @@
+# Long-running services. The schema Job has its own kustomization (base/schema) and is run by deploy.sh first.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yml
+  - dependencies
+  - routing
+  - observability
+  - sandbox
+  - compute
+  - agent
+  - orchestrator
+  - frontend
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ats-platform
+    includeSelectors: false

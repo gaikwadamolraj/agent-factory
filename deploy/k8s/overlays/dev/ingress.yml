@@ -1,0 +1,30 @@
+# UI under /ats and Grafana under /grafana on the shared host. No root route, no redirect: every other path keeps
+# going to the existing ingresses in namespace amol.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ats-platform
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      ats-platform-ats-security-headers@kubernetescrd,
+      ats-platform-ats-rate-limit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: amol.rackspire.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ats-frontend
+                port:
+                  name: http
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: ats-lgtm
+                port:
+                  name: grafana

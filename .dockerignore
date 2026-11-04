@@ -1,0 +1,19 @@
+# Build context is the repo root for Python services (they include libs/). Keep secrets, docs and local state out.
+**/.env
+**/.env.*
+!**/.env.example
+.git/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/node_modules/
+**/.next/
+**/tests/
+docs/
+**/impl_*.md
+deploy/
+*.log
+*.pdf
+.vscode/
+.idea/
