@@ -1,6 +1,6 @@
 # Documents and hybrid search
 
-* **Ingest** (`orchestrator/services/documents`): resume (PDF) or JD (PDF/TXT/MD or pasted text) -> type checked from
+* **Ingest** (`ats_orchestrator/services/documents`): resume (PDF) or JD (PDF/TXT/MD or pasted text) -> type checked from
   the bytes -> text extracted -> de-duplicated per tenant + kind + SHA-256 -> original file in the `BlobStore`
   (Postgres today; add S3/Azure/GDrive by implementing `BlobStore` and registering it for `BLOB_BACKEND`) ->
   chunked (1200 chars, 200 overlap) -> embedded with the LM Studio embedding model (nomic Q8_0, auto-selected) ->

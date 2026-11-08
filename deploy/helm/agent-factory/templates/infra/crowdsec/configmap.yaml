@@ -1,0 +1,15 @@
+{{- /* CrowdSec acquisition: one datasource file in /etc/crowdsec/acquis.d/ telling the agent to read Traefik's JSON
+       access log (shared with Traefik on the node, see infra.crowdsec.accessLogHostPath). The `type: traefik` label
+       routes the lines to the crowdsecurity/traefik parsers/scenarios (installed via COLLECTIONS). */ -}}
+{{- with .Values.infra.crowdsec }}
+{{- if .enabled }}
+{{- $logPath := printf "%s/%s" (trimSuffix "/" .accessLogHostPath) .accessLogFile }}
+{{ include "ats.configMap" (dict
+    "root" $
+    "name" "crowdsec-acquis"
+    "namespace" $.Values.infra.namespace
+    "partOf" $.Values.infra.namespace
+    "appName" "crowdsec"
+    "data" (dict "traefik.yaml" (printf "filenames:\n  - %s\nlabels:\n  type: traefik\n" $logPath))) }}
+{{- end }}
+{{- end }}

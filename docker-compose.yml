@@ -1,53 +1,97 @@
-# Local stack: Postgres (pgvector) + Redis + schema job + agent + knowledge (FalkorDB, Redis 8 cache) + orchestrator +
-# frontend + Grafana LGTM.
+# Local stack, same services and names as the Helm chart (deploy/helm/ats-platform), without Kubernetes/Traefik.
 # LM Studio runs on the host:  lms server start --bind 0.0.0.0 --port 1235
 #
+#   ./scripts/local_env.sh          # once: creates .env from .env.example and generates keys/passwords (never printed)
 #   docker compose up --build
 #   UI       http://localhost:3000/ats      (acme.recruiter / acme.admin / globex.recruiter, password Demo@12345)
+#   Admin    http://localhost:3002/agent-factory  (skills, versions, domain packs, tool catalogue; admin role)
 #   Grafana  http://localhost:3001/grafana  (dashboard "ATS Platform Overview")
+#
+# Routing (no Traefik here): the browser only talks to the frontend; its server-side proxy (/ats/api/backend/*)
+# sends v1/auth/* and v1/admin/* to auth-service and everything else to ats-orchestrator, exactly as in the
+# cluster. Every service verifies tokens itself with the auth-service public keys (JWKS).
+# Secrets come from the root .env (docker compose reads it for ${...}); never commit .env.
+# agent-guardrail downloads its classifier model (~700 MB) into the guardrail-models volume on the first start.
+
 x-common: &common
   APP_ENV: DEV
   LOG_JSON: "true"
   OTEL_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
-  DATABASE_URL: postgresql://ats:ats@postgres:5432/ats_platform
-  JWT_SECRET: local-dev-only-jwt-secret-change-me-0123456789
-  COOKIE_SECURE: "false"
+  DATABASE_URL: postgresql://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/ats_platform
+  DATABASE_NAME: ats_platform
+  # same issuer everywhere; keys and token endpoint of the auth-service (ConfigMap ats-auth-config in the chart)
+  AUTH_ISSUER: http://auth-service
+  AUTH_JWKS_URL: http://auth-service:8004/.well-known/jwks.json
+  AUTH_TOKEN_URL: http://auth-service:8004/oauth/token
 
-# Every service reaches models only through the LLM gateway (aliases; see deploy/k8s/base/llm-config).
+# The one Redis of the platform (database 1; the knowledge graph uses database 0 for vector search).
+x-redis: &redis-url
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set in .env}@redis:6379/1
+
+# Every service reaches models only through the LLM gateway (aliases; see values.yaml infra.llmConfig).
 x-llm: &llm
   LLM_GATEWAY_URL: http://llm-gateway:4000/v1
-  LLM_GATEWAY_KEY: sk-local-dev-gateway-key
+  LLM_GATEWAY_KEY: ${LLM_GATEWAY_KEY:?set in .env}
+  LLM_CONFIG_VERSION: "2"
+  LLM_MODEL_CHAT: ats-chat
+  LLM_MODEL_SCREENING: ats-screening
+  LLM_MODEL_EXTRACTION: ats-extraction
+  LLM_MODEL_ANSWER: ats-answer
+  LLM_MODEL_EMBEDDING: ats-embedding
   LLM_PROFILES: '{"high-quality":{"chat":"ats-chat-quality","answer":"ats-answer-quality","extraction":"ats-extraction-quality"}}'
   LLM_CLIENT_PROFILES: '{"2":"high-quality"}'
+  LLM_EMBEDDING_ID: text-embedding-nomic-embed-text-v1.5@q8_0
+  LLM_EMBEDDING_DIM: "768"
   LLM_TIMEOUT_S: "1800"
+  LLM_MAX_OUTPUT_TOKENS: "4096"
+
+x-host-gateway: &host-gateway
+  - "host.docker.internal:host-gateway"
 
 services:
+  # ---------------------------------------------------------------------------------------------- infrastructure
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: ats
-      POSTGRES_PASSWORD: ats
-      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: postgres            # the schema job creates ats_platform
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test:
-        - CMD
-        - pg_isready
-        - -U
-        - ats
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER"
       interval: 3s
       retries: 20
 
+  # Same settings as the chart: Redis 8 (query engine for the semantic cache), AOF, evicts only keys with a TTL.
   redis:
-    image: redis:7-alpine
+    image: redis:8.2-alpine
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes --maxmemory 400mb --maxmemory-policy volatile-lru
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set in .env}
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
 
-  # LLM gateway (LiteLLM): same model configuration file as Kubernetes; backends on the host / LAN.
+  # Knowledge graph store: one graph per namespace + client + project. Browser UI off; password required.
+  falkordb:
+    image: falkordb/falkordb:v4.22.3
+    environment:
+      BROWSER: "0"
+      REDIS_ARGS: --requirepass ${FALKORDB_PASSWORD:?set in .env} --appendonly yes --maxmemory-policy noeviction
+    volumes:
+      - falkordata:/var/lib/falkordb/data
+
+  # LLM gateway (LiteLLM): the same model configuration file as Kubernetes; backends on the host / LAN.
   llm-gateway:
     image: ghcr.io/berriai/litellm:v1.108.0
     command:
@@ -56,41 +100,20 @@ services:
       - --port
       - "4000"
     environment:
-      LITELLM_MASTER_KEY: sk-local-dev-gateway-key
+      LITELLM_MASTER_KEY: ${LLM_GATEWAY_KEY:?set in .env}
       LITELLM_TELEMETRY: "False"
+      LITELLM_LOG: INFO
       DISABLE_ADMIN_UI: "True"
       BACKGROUND_HEALTH_CHECK_MAX_TOKENS: "1"
-      LMSTUDIO_API_BASE: http://host.docker.internal:1235/v1
+      LMSTUDIO_API_BASE: ${LMSTUDIO_API_BASE:-http://host.docker.internal:1235/v1}
       LMSTUDIO_API_KEY: lm-studio
-      VLLM_QWEN3_4B_API_BASE: http://192.168.0.120:8001/v1
+      VLLM_QWEN3_4B_API_BASE: ${VLLM_QWEN3_4B_API_BASE:-http://192.168.0.120:8001/v1}
       VLLM_QWEN3_4B_API_KEY: none
     volumes:
-      - ./deploy/k8s/base/llm-gateway/litellm-config.yaml:/etc/litellm/config.yaml:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ./deploy/helm/ats-platform/files/litellm-config.yaml:/etc/litellm/config.yaml:ro
+    extra_hosts: *host-gateway
     ports:
       - "4000:4000"
-
-  # Knowledge graph store: one graph per namespace + client + project. Browser UI off; password required.
-  falkordb:
-    image: falkordb/falkordb:v4.22.3
-    environment:
-      BROWSER: "0"
-      REDIS_ARGS: "--requirepass local-dev-falkordb --appendonly yes"
-    ports:
-      - "6390:6379"
-    volumes:
-      - falkordata:/var/lib/falkordb/data
-
-  # Semantic answer cache for the knowledge service (Redis 8 has vector search built in; database 0).
-  knowledge-redis:
-    image: redis:8.2-alpine
-    command:
-      - redis-server
-      - --requirepass
-      - local-dev-knowledge-cache
-    ports:
-      - "6380:6379"
 
   lgtm:
     image: grafana/otel-lgtm:0.8.1
@@ -101,117 +124,274 @@ services:
       - "3001:3000"
       - "4318:4318"
     volumes:
-      - ./deploy/k8s/base/observability/dashboards:/var/lib/ats-dashboards:ro
+      - ./deploy/helm/ats-platform/files/dashboards:/var/lib/ats-dashboards:ro
       - ./deploy/compose/grafana-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/ats-platform.yaml:ro
 
+  # Migration (create database -> alembic upgrade head -> demo data), like the chart's hook Job.
   schema:
     build:
       context: .
-      dockerfile: services/schema/Dockerfile
+      dockerfile: services/platform/schema/Dockerfile
+    command:
+      - python
+      - -m
+      - ats_schema
+      - all
     environment:
       <<: *common
-      SEED_DEMO_DATA: "true"
       OTEL_ENABLED: "false"
+      CREATE_DATABASE: "true"
+      MAINTENANCE_DATABASE: postgres
+      SEED_DEMO_DATA: "true"
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
-  agent:
+  # ---------------------------------------------------------------------------------------------- ATS services
+  auth-service:
     build:
       context: .
-      dockerfile: services/agent/Dockerfile
+      dockerfile: services/platform/auth-service/Dockerfile
     environment:
-      <<:
-        - *common
-        - *llm
-      REDIS_URL: redis://redis:6379/0
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      <<: [*common, *redis-url]
+      AUTH_SIGNING_KEY: ${AUTH_SIGNING_KEY:?run scripts/local_env.sh}
+      # Who may get a service token for whom - the same policy as services.authService.oauthClients in the chart.
+      OAUTH_CLIENT_AUDIENCES: ats-orchestrator=agent-skill|agent-compute|agent-knowledge-graph|agent-guardrail|agent-document|registry-service,agent-knowledge-graph=agent-guardrail,agent-document=agent-guardrail,agent-skill=registry-service,registry-service=auth-service
+      CLIENT_SECRET_ATS_ORCHESTRATOR: ${CLIENT_SECRET_ATS_ORCHESTRATOR:?run scripts/local_env.sh}
+      CLIENT_SECRET_AGENT_KNOWLEDGE_GRAPH: ${CLIENT_SECRET_AGENT_KNOWLEDGE_GRAPH:?run scripts/local_env.sh}
+      CLIENT_SECRET_AGENT_DOCUMENT: ${CLIENT_SECRET_AGENT_DOCUMENT:?run scripts/local_env.sh}
+      CLIENT_SECRET_AGENT_SKILL: ${CLIENT_SECRET_AGENT_SKILL:?run scripts/local_env.sh}
+      CLIENT_SECRET_REGISTRY_SERVICE: ${CLIENT_SECRET_REGISTRY_SERVICE:?run scripts/local_env.sh}
+      COOKIE_SECURE: "false"           # plain http locally
     depends_on:
       schema:
         condition: service_completed_successfully
       redis:
         condition: service_started
     ports:
-      - "8001:8001"
+      - "8004:8004"
 
-  orchestrator:
+  agent-skill:
     build:
       context: .
-      dockerfile: services/orchestrator/Dockerfile
+      dockerfile: services/agents/agent-skill/Dockerfile
     environment:
-      <<:
-        - *common
-        - *llm
-      REDIS_URL: redis://redis:6379/1
-      AGENT_MCP_URL: http://agent:8001/mcp
-      KNOWLEDGE_MCP_URL: http://knowledge:8002/mcp
-      LLM_MAX_CONCURRENCY: "5"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      <<: [*common, *redis-url, *llm]
+      ALLOWED_CALLERS: ats-orchestrator
+      TOOL_POLICY: ats-orchestrator=screen_candidate|ask_agent|cancel_request
+      # With the registry reachable, the version activated in the admin UI is what runs (prompts, rubric);
+      # without it the packaged skill module is used, which is also what happens if the registry is down.
+      REGISTRY_MCP_URL: http://registry-service:8005
+      SERVICE_CLIENT_SECRET: ${CLIENT_SECRET_AGENT_SKILL:?run scripts/local_env.sh}
     depends_on:
       schema:
         condition: service_completed_successfully
-      agent:
+      auth-service:
         condition: service_started
-      knowledge:
+      registry-service:
         condition: service_started
-    ports:
-      - "5000:5000"
 
-  knowledge:
+  agent-sandbox:
+    build:
+      context: services/agents/agent-sandbox
+    read_only: true
+    tmpfs:
+      - /work:size=64m
+      - /tmp:size=16m
+    environment:
+      MAX_CONCURRENT_RUNS: "4"
+      MEMORY_LIMIT_MB: "256"
+
+  agent-compute:
     build:
       context: .
-      dockerfile: services/knowledge/Dockerfile
+      dockerfile: services/agents/agent-compute/Dockerfile
+    environment:
+      <<: *common
+      SANDBOX_URL: http://agent-sandbox:8080
+      ALLOWED_CALLERS: ats-orchestrator
+      TOOL_POLICY: ats-orchestrator=execute_code|cancel_request
+    depends_on:
+      - agent-sandbox
+      - auth-service
+
+  agent-guardrail:
+    build:
+      context: .
+      dockerfile: services/agents/agent-guardrail/Dockerfile
+    environment:
+      <<: *common
+      ALLOWED_CALLERS: ats-orchestrator,agent-knowledge-graph,agent-document
+      TOOL_POLICY: ats-orchestrator=check_text,agent-knowledge-graph=check_text,agent-document=check_text
+      MODEL_CACHE_DIR: /models
+      HF_HOME: /models
+    volumes:
+      - guardrail-models:/models
+    depends_on:
+      - auth-service
+
+  # Document reader: PDF / DOCX / XLSX -> text, tables, metadata; injection-scanned through the guardrail.
+  agent-document:
+    build:
+      context: .
+      dockerfile: services/agents/agent-document/Dockerfile
+    environment:
+      <<: [*common, *llm]
+      ALLOWED_CALLERS: ats-orchestrator
+      TOOL_POLICY: ats-orchestrator=read_document|scan_document|chunk_document
+      GUARDRAIL_MCP_URL: http://agent-guardrail:8003/mcp
+      SERVICE_CLIENT_SECRET: ${CLIENT_SECRET_AGENT_DOCUMENT:?run scripts/local_env.sh}
+      # Extraction tiers: "auto" probes each PDF and picks fast (pypdfium2, text), tables (pdfplumber, ruled
+      # tables) or docling (layout ML + optional OCR). The docling tier needs the optional extra, which this
+      # image is not built with - add `args: {WITH_DOCLING: "1"}` under build: above to bake it in (multi-GB
+      # models). Without it the router falls back to the lighter tiers, so "auto" stays safe here.
+      DOCUMENT_EXTRACTOR: auto
+      # DOCLING_ARTIFACTS_PATH is not set on purpose: a docling-built image sets it to /models itself, and
+      # an entry here - even an empty one - would override that and make it hunt for models at run time.
+      DOCLING_OCR: "false"             # OCR scanned pages when the docling tier runs
+      EXTRACT_TIMEOUT_S: "300"      # one document's parse at any tier; frees the caller, not the thread
+      ROUTE_MIN_CHARS_PER_PAGE: "120"  # below this a PDF counts as image-heavy -> docling+OCR
+      ROUTE_TABLE_LINE_THRESHOLD: "6"  # ruled-line objects per page suggesting a real table
+    depends_on:
+      - auth-service
+      - agent-guardrail
+
+  agent-knowledge-graph:
+    build:
+      context: .
+      dockerfile: services/agents/agent-knowledge-graph/Dockerfile
     environment: &knowledge-env
-      <<:
-        - *common
-        - *llm
+      <<: [*common, *redis-url, *llm]
+      REDIS_DB: "0"                    # the semantic cache (vector search) only works in database 0
       GRAPHITI_TELEMETRY_ENABLED: "false"
-      REDIS_URL: redis://:local-dev-knowledge-cache@knowledge-redis:6379/0
       FALKORDB_HOST: falkordb
       FALKORDB_PORT: "6379"
-      FALKORDB_PASSWORD: local-dev-falkordb
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:?set in .env}
+      SERVICE_CLIENT_SECRET: ${CLIENT_SECRET_AGENT_KNOWLEDGE_GRAPH:?run scripts/local_env.sh}
+    extra_hosts: *host-gateway
     depends_on:
       schema:
         condition: service_completed_successfully
       falkordb:
         condition: service_started
-      knowledge-redis:
+      redis:
         condition: service_started
-    ports:
-      - "8002:8002"
+      auth-service:
+        condition: service_started
 
-  knowledge-worker:
+  agent-knowledge-graph-worker:
     build:
       context: .
-      dockerfile: services/knowledge/Dockerfile
+      dockerfile: services/agents/agent-knowledge-graph/Dockerfile
     command:
       - python
       - -m
-      - ats_knowledge.worker
+      - agent_knowledge_graph.worker
     environment:
       <<: *knowledge-env
+      SERVICE_NAME: agent-knowledge-graph-worker
       WORKER_CONCURRENCY: "1"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    extra_hosts: *host-gateway
     depends_on:
-      knowledge:
-        condition: service_started
+      - agent-knowledge-graph
 
-  frontend:
+  ats-orchestrator:
     build:
-      context: services/frontend
+      context: .
+      dockerfile: services/ats/ats-orchestrator/Dockerfile
     environment:
-      INTERNAL_BACKEND_URL: http://orchestrator:5000
+      <<: [*common, *redis-url, *llm]
+      SERVICE_CLIENT_SECRET: ${CLIENT_SECRET_ATS_ORCHESTRATOR:?run scripts/local_env.sh}
+      AGENT_MCP_URL: http://agent-skill:8001/mcp
+      COMPUTE_MCP_URL: http://agent-compute:8002/mcp
+      KNOWLEDGE_MCP_URL: http://agent-knowledge-graph:8002/mcp
+      GUARDRAILS_MCP_URL: http://agent-guardrail:8003/mcp
+      # The client's activated domain pack (ontology + guidance); an incomplete pack or an unreachable
+      # registry falls back to the packaged assets rather than half-applying.
+      PACK_DOMAIN: ats
+      PACK_SKILL_NAME: ats_screening
+      REGISTRY_MCP_URL: http://registry-service:8005
+      LLM_MAX_CONCURRENCY: "5"
+    extra_hosts: *host-gateway
     depends_on:
-      - orchestrator
+      schema:
+        condition: service_completed_successfully
+      auth-service:
+        condition: service_started
+      agent-skill:
+        condition: service_started
+      agent-compute:
+        condition: service_started
+      agent-knowledge-graph:
+        condition: service_started
+      agent-guardrail:
+        condition: service_started
+    ports:
+      - "5000:5000"
+
+  # The authoring plane: skills, versions, domain packs, the tool catalogue and delegated user management.
+  # Separate from the ATS product plane on purpose - this is where what the agents run is edited and approved.
+  registry-service:
+    build:
+      context: .
+      dockerfile: services/platform/registry-service/Dockerfile
+    environment:
+      <<: [*common, *redis-url]
+      SERVICE_CLIENT_SECRET: ${CLIENT_SECRET_REGISTRY_SERVICE:?run scripts/local_env.sh}
+      AUTH_SERVICE_BASE_URL: http://auth-service:8004
+      AUTH_SERVICE_AUDIENCE: auth-service
+      MAX_REQUEST_KB: "256"             # a skill version's files are larger than a login
+      CORS_ORIGINS: ""                  # browser calls come through the admin-ui proxy (same origin)
+      RATE_LIMIT_PER_MINUTE: "120"
+      # MCP front door, default deny: agent-skill resolves the version it must run and nothing else.
+      ALLOWED_CALLERS: agent-skill,ats-orchestrator
+      TOOL_POLICY: agent-skill=resolve_skill,ats-orchestrator=resolve_skill
+      # Tool catalogue the admin UI may browse and invoke through this service: name=base_url|audience.
+      MCP_REGISTRY: agent-skill=http://agent-skill:8001|agent-skill,agent-compute=http://agent-compute:8002|agent-compute,agent-knowledge-graph=http://agent-knowledge-graph:8002|agent-knowledge-graph,agent-guardrail=http://agent-guardrail:8003|agent-guardrail
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+      auth-service:
+        condition: service_started
+      redis:
+        condition: service_started
+    ports:
+      - "8005:8005"
+
+  # Admin console for registry-service, served under /agent-factory (in the cluster it is behind the gateway's
+  # IP allow-list and basic auth; locally it is simply on its own port).
+  admin-ui:
+    build:
+      context: services/platform/admin-ui
+      args:
+        NEXT_BASE_PATH: /agent-factory
+    environment:
+      NEXT_BASE_PATH: /agent-factory
+      INTERNAL_REGISTRY_URL: http://registry-service:8005
+      INTERNAL_AUTH_URL: http://auth-service:8004
+      MAX_REQUEST_MB: "5"
+    depends_on:
+      - registry-service
+      - auth-service
+    ports:
+      - "3002:3000"
+
+  ats-ui:
+    build:
+      context: services/ats/ats-ui
+    environment:
+      INTERNAL_BACKEND_URL: http://ats-orchestrator:5000
+      INTERNAL_AUTH_URL: http://auth-service:8004
+      MAX_REQUEST_MB: "25"
+    depends_on:
+      - ats-orchestrator
+      - auth-service
     ports:
       - "3000:3000"
 
 volumes:
   pgdata:
+  redisdata:
   falkordata:
+  guardrail-models:

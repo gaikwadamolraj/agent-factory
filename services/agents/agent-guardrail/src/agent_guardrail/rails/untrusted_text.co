@@ -1,0 +1,9 @@
+# Untrusted text (documents, chat messages) must not instruct the LLM.
+define bot refuse untrusted text
+  "BLOCKED"
+
+define flow check untrusted text
+  $guard = execute check_untrusted_text(text=$user_message)
+  if $guard["blocked"]
+    bot refuse untrusted text
+    stop

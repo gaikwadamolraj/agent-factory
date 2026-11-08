@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Claim",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "claim_reference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy_number": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "product_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reported_date": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "loss_date": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "loss_date_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cause_of_loss_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cause_category": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "circumstances_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "location_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "claimed_amount": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "claim_status": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "authority_reference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "head_of_damage": {
+            "type": "string",
+            "enum": [
+              "repair",
+              "replacement",
+              "loss_of_use",
+              "medical_expense",
+              "lost_income",
+              "third_party_damage",
+              "third_party_injury",
+              "legal_costs",
+              "additional_expense",
+              "recovery_costs",
+              "other"
+            ]
+          },
+          "insured_item": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claimed_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quantity": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "valuation_basis_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "source_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "document_kind": {
+            "type": "string"
+          },
+          "document_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issuer_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reference_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_state": {
+            "type": "string",
+            "enum": [
+              "document_supplied",
+              "referenced_only"
+            ]
+          }
+        }
+      }
+    },
+    "parties": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "claimant",
+              "third_party",
+              "driver",
+              "passenger",
+              "witness",
+              "beneficiary",
+              "dependant",
+              "contractor",
+              "adjuster",
+              "handler",
+              "legal_representative",
+              "other"
+            ]
+          },
+          "relationship_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "stated_positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "position",
+          "quote"
+        ],
+        "properties": {
+          "item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clause_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "covered",
+              "conditional",
+              "excluded",
+              "insufficient_evidence",
+              "not_applicable"
+            ]
+          },
+          "position_source": {
+            "type": "string",
+            "enum": [
+              "insurer_letter",
+              "adjuster_report",
+              "policy_document",
+              "broker_statement",
+              "claimant_assertion",
+              "other"
+            ]
+          },
+          "quote": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "missing_information": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "manipulation_detected": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "manipulation_note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

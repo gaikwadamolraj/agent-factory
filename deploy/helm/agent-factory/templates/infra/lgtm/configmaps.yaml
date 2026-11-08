@@ -1,0 +1,41 @@
+{{- /* Grafana settings, dashboard provider, start script and dashboards of the LGTM pod. Datasources (uid
+       prometheus / loki / tempo) come pre-provisioned with the grafana/otel-lgtm image.
+       grafana-start replaces the image's run-grafana.sh, which exports anonymous Admin access: admin and viewer
+       logins come from secrets.infra (grafana-admin-*, grafana-viewer-*). Dashboards: files/dashboards/*.json. */ -}}
+{{- if .Values.infra.lgtm.enabled }}
+{{ include "ats.configMap" (dict "root" $ "name" "grafana-settings" "namespace" .Values.infra.namespace "partOf" .Values.infra.namespace "appName" "lgtm" "data" .Values.infra.lgtm.grafanaSettings) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "grafana-provisioning" "appName" "lgtm") | nindent 2 }}
+data:
+  agent-factory.yaml: |
+    apiVersion: 1
+    providers:
+      - name: agent-factory
+        folder: ATS
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/ats-dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "grafana-start" "appName" "lgtm") | nindent 2 }}
+data:
+  {{- dict "run-grafana.sh" (.Files.Get "files/grafana/run-grafana.sh") | toYaml | nindent 2 }}
+---
+{{- $dashboards := dict }}
+{{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+{{- $_ := set $dashboards (base $path) ($.Files.Get $path) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "grafana-dashboards" "appName" "lgtm") | nindent 2 }}
+data:
+  {{- toYaml $dashboards | nindent 2 }}
+{{- end }}

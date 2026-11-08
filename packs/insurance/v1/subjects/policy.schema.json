@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Policy",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "policy_number": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "product_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "insurer_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "broker_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policyholder_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "holder_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "period_start": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "period_end": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sum_insured": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deductible_amount": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "deductible_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "territory_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "wording_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "location_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "insured_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "item_type": {
+            "type": "string",
+            "enum": [
+              "vehicle",
+              "building",
+              "contents",
+              "equipment",
+              "machinery",
+              "stock",
+              "cargo",
+              "trip",
+              "person",
+              "pet",
+              "revenue_stream",
+              "liability_interest",
+              "other"
+            ]
+          },
+          "identifier_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sum_insured": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schedule_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "clause_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_operative": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "limit_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "endorsements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "reference"
+        ],
+        "properties": {
+          "reference": {
+            "type": "string"
+          },
+          "effective_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "adds_cover",
+              "removes_cover",
+              "changes_limit",
+              "changes_deductible",
+              "changes_condition",
+              "changes_item",
+              "administrative",
+              "other"
+            ]
+          },
+          "quote": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "document_kind": {
+            "type": "string"
+          },
+          "document_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reference_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "criteria_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "missing_information": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "manipulation_detected": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "manipulation_note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

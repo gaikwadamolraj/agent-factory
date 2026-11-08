@@ -1,0 +1,35 @@
+[project]
+name = "agent-document"
+version = "0.1.0"
+description = "Document-reader agent: extract text/tables/metadata from PDF/DOCX/XLSX, injection-scan via agent-guardrail, optional chunk+embed, exposed over MCP"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "agent-common[mcp,llm]",
+    "mcp>=2.0.0",
+    # PDF text + tables + metadata (same library the ats-orchestrator uses)
+    "python-docx>=1.1.0",       # Word .docx paragraphs + tables
+    "openpyxl>=3.1.0",          # Excel .xlsx sheets/cells
+    "uvicorn>=0.30.0",
+    "pypdfium2>=5.15.1",
+    "pdfplumber>=0.11.10",
+]
+
+[project.optional-dependencies]
+docling = [
+    "docling>=2.149.0",
+]
+
+[tool.uv.sources]
+agent-common = { path = "../../common", editable = false }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

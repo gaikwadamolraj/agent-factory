@@ -1,0 +1,79 @@
+{{- /* Grafana LGTM (OTel collector + Prometheus + Loki + Tempo + Grafana in one pod): Deployment + Service.
+       Services send OTLP/HTTP to http://lgtm.<infra namespace>.svc.cluster.local:4318. Grafana is served under /grafana.
+       Data lives on an emptyDir (infra.lgtm.dataSizeLimit); use a PVC for retention across restarts. */ -}}
+{{- with .Values.infra.lgtm }}
+{{- if .enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "lgtm" "appName" "lgtm") | nindent 2 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lgtm
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "lgtm") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "ats.checksum" (dict "root" $ "path" "infra/lgtm/configmaps.yaml") }}
+    spec:
+      containers:
+        - name: lgtm
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          ports:
+            - name: grafana
+              containerPort: 3000
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          envFrom:
+            - configMapRef:
+                name: grafana-settings
+          env:   # Grafana logins (optional keys; without an admin password the admin sign-in stays locked)
+            {{- include "ats.env" (dict "root" $ "env" .env) | nindent 12 }}
+          volumeMounts:
+            - name: start
+              mountPath: /otel-lgtm/run-grafana.sh
+              subPath: run-grafana.sh
+            - name: provisioning
+              mountPath: /otel-lgtm/grafana/conf/provisioning/dashboards/agent-factory.yaml
+              subPath: agent-factory.yaml
+            - name: dashboards
+              mountPath: /var/lib/ats-dashboards
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /grafana/api/health
+              port: grafana
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+      volumes:
+        - name: start
+          configMap:
+            name: grafana-start
+            defaultMode: 0755
+        - name: provisioning
+          configMap:
+            name: grafana-provisioning
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .dataSizeLimit }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "lgtm" "ports" (list
+    (dict "name" "grafana" "port" 3000 "targetPort" "grafana")
+    (dict "name" "otlp-grpc" "port" 4317 "targetPort" "otlp-grpc")
+    (dict "name" "otlp-http" "port" 4318 "targetPort" "otlp-http"))) }}
+{{- end }}
+{{- end }}

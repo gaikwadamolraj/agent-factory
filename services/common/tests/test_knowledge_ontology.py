@@ -1,9 +1,9 @@
-"""ats_common.knowledge: ontology formats (model + authoring), enum attributes, search filters, entity updates."""
+"""agent_common.knowledge: ontology formats (model + authoring), enum attributes, search filters, entity updates."""
 import pytest
 from pydantic import ValidationError
 
-from ats_common.knowledge.contracts import SearchRequest, UpdateEntityRequest
-from ats_common.knowledge.ontology import parse_ontology
+from agent_common.knowledge.contracts import SearchRequest, UpdateEntityRequest
+from agent_common.knowledge.ontology import parse_ontology
 
 AUTHORING = {
     "name": "cv_graph", "version": "2.0",

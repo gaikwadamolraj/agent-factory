@@ -1,0 +1,32 @@
+# Dev (k3d, host amol.rackspire.ai): what differs from values.yaml.
+# Images are local (k3d image import); deploy.sh passes the built tags (--set global.image.tag / services.<x>.image.tag).
+
+global:
+  image:
+    registry: ""
+    tag: dev
+
+keda:
+  enabled: true      # ./deploy.sh installs the KEDA operator when it is missing
+
+infra:
+  lgtm:
+    route:
+      enabled: true  # Grafana under /grafana
+
+schema:
+  config:
+    SEED_DEMO_DATA: "true"           # demo tenants / users
+
+services:
+  authService:
+    config:
+      COOKIE_SECURE: "false"         # dev ingress is plain http; keep "true" (base default) behind TLS
+  # Expose the UI (and its stricter auth / chat-turn limits) on the shared host.
+  atsUi:
+    route:
+      enabled: true
+  # Expose the admin console under /admin on the same host.
+  adminUi:
+    route:
+      enabled: true

@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #020617;
+  color: #e2e8f0;
+}
+
+/* Small, readable JSON editors throughout the admin console. */
+textarea,
+input,
+select {
+  color-scheme: dark;
+}

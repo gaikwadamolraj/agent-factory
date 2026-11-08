@@ -1,0 +1,1786 @@
+# Base values: everything a full install of the ATS platform needs. Environment files (values-dev.yaml,
+# values-prod.yaml) only override what differs. Secrets are never set here: the chart references existing Secrets
+# by name (files/secret.example.yaml lists their keys).
+#
+# Two namespaces:
+#   release namespace (agent-factory) the platform services, their ConfigMaps, routing, KEDA, schema Job
+#   infra.namespace   (agent-infra)   shared platform infrastructure: Postgres, Redis, FalkorDB, graph Redis,
+#                                     LLM gateway, LGTM (Grafana)
+# Naming: ATS services are named after their service folder (agent-skill, ...); product-wide app objects keep the
+# ats- prefix (ats-ui, llm-config, schema-*); infra objects carry only the component name (postgres,
+# llm-gateway, lgtm, ...), because they are platform infrastructure, not part of the ATS product.
+#
+# ConfigMap values and plain env values are strings on purpose (env vars); keep them quoted. They go through tpl,
+# so they may contain {{ .Values.infra.namespace }} (FQDNs of infra services).
+
+global:
+  # app.kubernetes.io/part-of label on every object of the release namespace.
+  partOf: agent-factory
+  image:
+    # Registry/prefix of the ATS images, e.g. registry.example.com/ats. Empty = local images (k3d import).
+    registry: ""
+    # Tag of all ATS images; empty = Chart.appVersion. A service may override it with services.<x>.image.tag.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Container securityContext of every container unless a component sets its own.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# Existing Secrets (created once, never committed; keys: files/secret.example.yaml).
+secrets:
+  platform: agent-factory-secrets   # in the release namespace: the ATS services, schema Job, KEDA
+  infra: agent-infra-secrets       # in infra.namespace: Postgres, Redis, FalkorDB, graph Redis, LLM gateway, Grafana
+
+# ------------------------------------------------------------------------------------------- shared infrastructure
+infra:
+  # Namespace of the shared infrastructure (created by the chart, see templates/infra/namespaces).
+  namespace: agent-infra
+
+  # Apps reach Postgres / Redis directly by their in-cluster FQDN
+  # (postgres.<infra-namespace>.svc.cluster.local / redis.<...>), set in the database-url / redis-url Secrets.
+  # No ExternalName aliases: the FQDN resolves from any namespace, including KEDA's.
+
+  # PostgreSQL 16 + pgvector (StatefulSet + PVC). Secret keys: postgres-user, postgres-password, postgres-db.
+  postgres:
+    enabled: true
+    image: pgvector/pgvector:pg16
+    storage: 10Gi
+    # Empty = the cluster default StorageClass.
+    storageClassName: ""
+    # Namespaces whose pods may also connect (the KEDA operator counts the knowledge queue in Postgres; it runs in
+    # the infra namespace). Keep in sync with infra.namespace.
+    extraClientNamespaces:
+      - agent-infra
+    podSecurityContext:
+      fsGroup: 999
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  # PgBouncer: connection pooler in front of Postgres for KEDA-scaled pods (many short-lived connections). Default
+  # OFF: enable the pod, then point database-url at pgbouncer.<infra-namespace>:<listenPort> and set DB_PGBOUNCER=true
+  # on the services (disables asyncpg's prepared-statement cache for transaction pooling; SQLi defense is unaffected -
+  # queries stay parameterized). The schema migration must connect DIRECTLY to Postgres (DDL), not through the pooler.
+  # Validate the auth mode (scram vs md5, userlist vs auth_query) against the running Postgres at deploy time.
+  pgbouncer:
+    enabled: false
+    image: edoburu/pgbouncer:v1.23.1-p3
+    replicas: 1
+    poolMode: transaction
+    authType: scram-sha-256
+    maxClientConn: 1000
+    defaultPoolSize: 25
+    listenPort: 6432                 # Service port; container listens on 5432
+    # --- Authentication (docs/impl_pgbouncer.md) -------------------------------------------------------------
+    # WARNING about the default (userlist) mode: this image's entrypoint writes DB_USER/DB_PASSWORD into
+    # /etc/pgbouncer/userlist.txt, and with authType scram-sha-256 (or plain) it writes the password IN CLEARTEXT.
+    # That means the Postgres superuser password sits readable inside the pooler container. Acceptable only for a
+    # dev cluster. For anything else turn on auth_query below: PgBouncer then looks each user up in Postgres with a
+    # dedicated, low-privilege role and no application password is stored in the pod at all.
+    #
+    # authUser: a Postgres role that may call authQuery and nothing else (NOT the app/superuser role). Create it and
+    # the SECURITY DEFINER lookup function once per database - the SQL is in docs/impl_pgbouncer.md. Its own password
+    # still has to reach PgBouncer, so set secrets.infra key `pgbouncer-auth-password` and keep authUser != DB_USER.
+    # Empty authUser = off (userlist mode, the warning above applies).
+    authUser: ""
+    authDbname: ""                   # database the lookup runs in; empty = the client's own database
+    authQuery: "SELECT usename, passwd FROM public.pgbouncer_get_auth($1)"
+    # PgBouncer's admin console (SHOW/PAUSE/RECONNECT over the same port). The image defaults this to `postgres`,
+    # which would let the application superuser drive the pooler. Point it at a role that does not exist so the
+    # console is effectively closed; name a real operator role only if you want console access.
+    adminUsers: "pgbouncer-console-disabled"
+    statsUsers: ""                   # read-only SHOW STATS role; empty = none
+    # TLS on the PgBouncer -> Postgres hop. `prefer` uses TLS when Postgres offers it and still connects when it does
+    # not; set `require` (or `verify-full` with serverTlsCaFile) once Postgres serves certificates.
+    serverTlsSslmode: "prefer"
+    clientTlsSslmode: ""             # TLS on the app -> PgBouncer hop; empty = plaintext in-cluster
+    # Startup parameters PgBouncer may ignore in transaction pooling (clients send them, the pooler cannot honour
+    # them per-session). extra_float_digits is the image default; asyncpg/SQLAlchemy also send the other two.
+    ignoreStartupParameters: "extra_float_digits,search_path,options"
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+    # The entrypoint writes /etc/pgbouncer/{pgbouncer.ini,userlist.txt} at startup, so the root filesystem cannot be
+    # read-only without mounting both files; capabilities and privilege escalation are dropped.
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  # The one Redis of the platform (StatefulSet + PVC, AOF on). Secret key: redis-password. Redis 8 includes the
+  # query engine (vector search) the knowledge-graph semantic cache needs; that cache must use database 0
+  # (REDIS_DB "0" in agentKnowledgeGraph.config), the other services use the database in the secret's redis-url.
+  # Keys are separated by agent_common.redis_keys prefixes. At maxMemory it evicts only keys WITH a TTL
+  # (volatile-lru): caches, sessions, counters with a window; counters that must never vanish (authz and graph
+  # versions, config version) have no TTL and are never evicted.
+  redis:
+    enabled: true
+    image: redis:8.2-alpine
+    maxMemory: 400mb
+    maxMemoryPolicy: volatile-lru
+    storage: 5Gi
+    storageClassName: ""
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+      runAsGroup: 999
+      fsGroup: 999
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # llm-config (release namespace): LLM settings every LLM-using service reads (agent_common.llm).
+  #   LLM_MODEL_*          gateway alias per purpose (the gateway decides which real model serves it)
+  #   LLM_PROFILES         profile -> {purpose: alias} overrides
+  #   LLM_CLIENT_PROFILES  client id -> profile: the per-client model policy (here: globex = high-quality)
+  #   LLM_CONFIG_VERSION   bump when the models behind the aliases change (part of every LLM cache key)
+  llmConfig:
+    enabled: true
+    data:
+      LLM_GATEWAY_URL: "http://llm-gateway.{{ .Values.infra.namespace }}.svc.cluster.local/v1"
+      LLM_CONFIG_VERSION: "2"
+      LLM_MODEL_CHAT: "ats-chat"
+      LLM_MODEL_SCREENING: "ats-screening"
+      LLM_MODEL_EXTRACTION: "ats-extraction"
+      LLM_MODEL_ANSWER: "ats-answer"
+      LLM_MODEL_EMBEDDING: "ats-embedding"
+      LLM_PROFILES: '{"high-quality":{"chat":"ats-chat-quality","answer":"ats-answer-quality","extraction":"ats-extraction-quality"}}'
+      LLM_CLIENT_PROFILES: '{"2":"high-quality"}'
+      LLM_EMBEDDING_ID: "text-embedding-nomic-embed-text-v1.5@q8_0"
+      LLM_EMBEDDING_DIM: "768"
+      LLM_TIMEOUT_S: "1800"
+      LLM_MAX_OUTPUT_TOKENS: "4096"
+
+  # LiteLLM gateway (llm-gateway). Model configuration: files/litellm-config.yaml (docs/llm_gateway.md).
+  llmGateway:
+    enabled: true
+    image: ghcr.io/berriai/litellm:v1.108.0
+    replicas: 1
+    numWorkers: 1
+    # Where each backend runs (ConfigMap llm-gateway-backends, read by litellm-config.yaml via os.environ/...).
+    backends:
+      LMSTUDIO_API_BASE: "http://172.21.208.1:1235/v1"
+      VLLM_QWEN3_4B_API_BASE: "http://192.168.0.120:8001/v1"
+    # Pods (app.kubernetes.io/name, release namespace) allowed to call the gateway.
+    callers:
+      - agent-skill
+      - ats-orchestrator
+      - ats-orchestrator-onboarding
+      # ats-orchestrator-bulk-match is deliberately absent: it selects subjects with a SQL query and grades
+      # them by calling agent-skill, which owns every model call. It never dials the gateway itself.
+      - agent-knowledge-graph
+      - agent-knowledge-graph-worker
+      - agent-document        # chunk_document embeds chunks (optional, non-fatal if the gateway is down)
+    env:
+      - name: LITELLM_MASTER_KEY
+        secretKeyRef:
+          secret: infra
+          key: master-key
+      - name: LMSTUDIO_API_KEY
+        secretKeyRef:
+          secret: infra
+          key: lmstudio-api-key
+      - name: VLLM_QWEN3_4B_API_KEY
+        secretKeyRef:
+          secret: infra
+          key: vllm-qwen3-4b-api-key
+      - name: LITELLM_TELEMETRY
+        value: "False"
+      - name: LITELLM_LOG
+        value: "INFO"
+      - name: DISABLE_ADMIN_UI
+        value: "True"
+      - name: BACKGROUND_HEALTH_CHECK_MAX_TOKENS   # health probes generate 1 token: no load on the models
+        value: "1"
+      - name: HOME
+        value: /tmp
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+    tmpSizeLimit: 256Mi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1536Mi
+
+  # FalkorDB graph store of the knowledge graph (StatefulSet + PVC). Secret key: falkordb-password.
+  falkordb:
+    enabled: true
+    image: falkordb/falkordb:v4.22.3
+    # Appended to "--requirepass $(FALKORDB_PASSWORD)".
+    redisArgs: "--appendonly yes --maxmemory-policy noeviction"
+    storage: 5Gi
+    storageClassName: ""
+    podSecurityContext:
+      fsGroup: 999
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+  # CrowdSec behavioural IPS (templates/infra/crowdsec): the Local API (LAPI) + agent that turn Traefik access-log
+  # patterns (404 scanning, credential stuffing, scraping) into IP bans. The gateway's `crowdsec` bouncer Middleware
+  # (infra.routing.crowdsec) asks this LAPI whether a client IP is banned. Default OFF: a deploy without CrowdSec is
+  # unaffected. Enabling needs BOTH this component (infra.crowdsec.enabled) and the bouncer (infra.routing.crowdsec.
+  # enabled), plus the Traefik static-config changes in deploy/review/amol-host/traefik-gateway-config.yaml and a
+  # bouncer API-key Secret (see docs/gateway_security.md).
+  #
+  # Topology (single-node k3d): one pod runs the LAPI and the agent in the same container (the image default). Traefik
+  # (kube-system) writes a JSON access log to a node path (infra.crowdsec.accessLogHostPath); the agent mounts that
+  # same path read-only and acquires it (acquis.d ConfigMap). This "shared log file on the node" topology is the
+  # simplest that works on one node; on a multi-node cluster the agent and Traefik may land on different nodes, so a
+  # per-node DaemonSet reading container logs would be needed instead (documented as a limitation).
+  crowdsec:
+    enabled: false
+    # Pin a real release (https://version.crowdsec.net/latest). Since 1.7.0 /var/lib/crowdsec/data must be a volume.
+    image: crowdsecurity/crowdsec:v1.8.2
+    # Hub collections installed at startup (needs egress to the hub the first time): the Traefik parsers + scenarios.
+    collections: "crowdsecurity/traefik"
+    # Disable the CrowdSec Central API (no signal sharing / online enrollment). Set false to opt in (needs egress).
+    disableOnlineApi: true
+    # LAPI port; the Service exposes it so the bouncer's lapiUrl resolves to crowdsec.<infra-namespace>:8080.
+    lapiPort: 8080
+    # Bouncer auto-registration: the LAPI registers this bouncer with the key from the Secret below, so the key lives
+    # ONLY in the Secret (never a manifest). The same Secret value is mounted into Traefik for the plugin to read (see
+    # the review file). The env ref is optional - if the Secret/key is absent the pod still starts and you register by
+    # hand: `kubectl -n <infra-ns> exec deploy/crowdsec -- cscli bouncers add <bouncerName>` (prints a key).
+    bouncerName: traefik-bouncer
+    bouncerKeySecret: crowdsec-bouncer
+    bouncerKeySecretKey: api-key
+    # Where Traefik writes its JSON access log on the node, and the file name; the agent reads the same path.
+    accessLogHostPath: /var/log/traefik
+    accessLogFile: access.log
+    # CrowdSec DB (SQLite) PVC.
+    storage: 1Gi
+    storageClassName: ""
+    # Namespaces whose pods may reach the LAPI. Traefik (the bouncer) runs in kube-system.
+    extraClientNamespaces:
+      - kube-system
+    # CrowdSec's entrypoint writes generated config under /etc/crowdsec and the DB under /var/lib/crowdsec/data; the
+    # upstream image runs as root. fsGroup makes the PVC group-writable; running fully non-root needs validation on a
+    # live cluster (file ownership of the mounted access log and /etc/crowdsec). See docs/gateway_security.md.
+    podSecurityContext:
+      fsGroup: 1000
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  # Traefik routing shared by the UI (templates/routing) and Grafana (templates/infra/lgtm): the host, the UI base
+  # path and the Middlewares. The per-service exposure itself lives in each block's `route` (see services.atsUi).
+  routing:
+    # Shared host of the UI and Grafana, and the UI base path (the frontend is built with this basePath).
+    host: amol.rackspire.ai
+    basePath: /ats
+    middlewares:
+      enabled: true
+      referrerPolicy: strict-origin-when-cross-origin
+      # CSP that allows Next.js inline scripts and blob previews (also used for Grafana).
+      contentSecurityPolicy: >-
+        default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+        img-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; object-src 'self' blob:
+      # Proxies in front of Traefik (client IP = depth-th address from the right of X-Forwarded-For).
+      ipStrategyDepth: 2
+      rateLimits:
+        # General limit of the UI routes.
+        rate-limit:
+          average: 20
+          burst: 40
+          period: 1s
+        # Login / refresh / logout (brute force; the app also locks a username after 5 failures).
+        rate-limit-auth:
+          average: 10
+          burst: 10
+          period: 1m
+        # Sending a chat turn (LLM work); per IP, keep it generous for offices behind one NAT address.
+        rate-limit-turns:
+          average: 10
+          burst: 5
+          period: 1m
+        # Admin console (/agent-factory): deliberately tight — admins are few and act rarely.
+        rate-limit-admin:
+          average: 5
+          burst: 5
+          period: 1m
+
+    # Web Application Firewall (OWASP CRS via the Coraza WASM plugin). Applied to EVERY exposed route (so the chat
+    # API, which is proxied under /ats, is covered too). Requires the plugin loaded in Traefik's static config
+    # (deploy/review/amol-host/traefik-gateway-config.yaml). Start in DetectionOnly, watch the logs, then switch to
+    # On. Response-body inspection is OFF so it never buffers/breaks the streamed (SSE) chat answers.
+    waf:
+      enabled: false
+      # Coraza directives (order matters). DetectionOnly logs would-be blocks without refusing; change to
+      # "SecRuleEngine On" to enforce. crsEnabled mounts the embedded OWASP Core Rule Set.
+      directives:
+        - "SecRuleEngine DetectionOnly"
+        - "SecRequestBodyAccess On"
+        - "SecResponseBodyAccess Off"
+        - "SecDataDir /tmp/"
+        - "Include @coraza.conf-recommended"
+        - "Include @crs-setup.conf.example"
+        - "Include @owasp_crs/*.conf"
+
+    # Bot / AI-scraper defense (Bot Wrangler plugin): checks traffic against known AI-bot lists and blocks/tarpits
+    # unwanted agents. Applied to every exposed route. Needs the plugin in Traefik static config (review file).
+    botDefense:
+      enabled: false
+      # Coraza-style plugin config passed through to the Bot Wrangler middleware. "block" refuses known AI bots.
+      action: block        # log | block | tarpit
+
+    # Behavioural IPS (CrowdSec): the bouncer middleware asks the CrowdSec LAPI whether a client IP is banned
+    # (decided from access-log patterns: 404 scanning, credential stuffing, scraping). Requires the bouncer plugin
+    # (review file) AND a running CrowdSec LAPI + log agent (see docs/gateway_security.md - a separate component).
+    crowdsec:
+      enabled: false
+      lapiUrl: "http://crowdsec.agent-infra.svc.cluster.local:8080"
+      # The bouncer's API key lives in a Secret named `crowdsec-bouncer` (key `api-key`). The LAPI side reads it via
+      # infra.crowdsec.bouncerKeySecret to auto-register the bouncer; the Traefik side reads it from a file.
+      apiKeySecret: crowdsec-bouncer
+      apiKeySecretKey: api-key
+      # The bouncer plugin runs INSIDE Traefik (kube-system), so the key cannot come from a chart Secret ref. The
+      # chart renders only this FILE PATH into the Middleware (never the key); the Traefik pod mounts the
+      # `crowdsec-bouncer` Secret here (deploy/review/amol-host/traefik-gateway-config.yaml). Set apiKeyFile to "" to
+      # fall back to supplying the key inline by patching the Middleware yourself (NOT recommended; see the docs).
+      apiKeyFile: /etc/traefik/crowdsec/api-key
+
+    # Extra defense-in-depth for the admin console only (on top of JWKS auth + default-deny IAM in registry-service).
+    adminProtection:
+      # Only these source ranges may reach /agent-factory at all. enabled:false = no IP restriction (fill the CIDRs
+      # with your office/VPN ranges, then set enabled:true — otherwise you lock yourself out).
+      ipAllowList:
+        enabled: false
+        allowedCIDRs: []
+      # A Traefik basic-auth wall in front of the console login. The Secret (htpasswd, bcrypt) lives in the infra
+      # namespace; create it yourself, then set enabled:true:
+      #   htpasswd -nbB admin '<password>' | kubectl -n agent-infra create secret generic admin-basic-auth --from-file=users=/dev/stdin
+      basicAuth:
+        enabled: false
+        secret: admin-basic-auth
+
+  # Temporal: the durable workflow engine (docs/impl_temporal.md). Default OFF - services fall back to their
+  # non-durable path while TEMPORAL_ADDRESS is empty, so it is switched on one service at a time.
+  # Persistence is OUR Postgres in two extra databases; no new datastore. Turning this on means:
+  #   1. infra.temporal.enabled=true. The auto-setup image creates the `temporal` and `temporal_visibility`
+  #      databases AND their schemas itself on first start (verified against 1.26.2 + Postgres 16: 36 and 3
+  #      tables), so our schema job does NOT need to create them;
+  #   2. set TEMPORAL_ADDRESS on the services that should use it (see services.*.config);
+  #   3. add those services to infra.temporal.callers below, or they cannot reach the engine.
+  # Note: the server binds to the POD IP, not 0.0.0.0 - a tcpSocket probe works, `localhost:7233` does not.
+  temporal:
+    enabled: false
+    # Pin the version: an upgrade can require a schema migration, which is a planned operation and must never
+    # be a side effect of a redeploy. auto-setup creates the schemas on first start and is idempotent after.
+    image: temporalio/auto-setup:1.26.2
+    replicas: 1
+    databaseName: temporal
+    visibilityDatabaseName: temporal_visibility
+    # Fixed for the life of the cluster: changing it needs a reset, so pick once. 512 suits a single-cluster
+    # deployment; raise only with evidence that history shards are the bottleneck.
+    numHistoryShards: 512
+    defaultNamespace: default
+    defaultNamespaceRetention: 7d
+    # Pods of the release namespace allowed to reach the engine on 7233. Keep in step with the services whose
+    # config carries TEMPORAL_ADDRESS; an empty list would admit every pod in the namespace, which is why the
+    # callers are named here explicitly.
+    callers:
+      - ats-orchestrator
+      - ats-orchestrator-onboarding
+      - ats-orchestrator-bulk-match
+      - agent-skill
+      - agent-knowledge-graph-worker
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+    ui:
+      enabled: false
+      image: temporalio/ui:2.34.0
+      # Served under this sub-path on the shared host; must match the route path below.
+      basePath: /temporal
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      # The UI shows run arguments and results across every tenant, so it reuses the admin-console protections
+      # (infra.routing.adminProtection: IP allow-list + basic auth) rather than being merely rate-limited.
+      route:
+        enabled: false
+        className: traefik
+        rateLimit:
+          average: 20
+          burst: 40
+          period: 1s
+
+  # Grafana LGTM (OTel collector, Prometheus, Loki, Tempo, Grafana). Dashboards: files/dashboards/*.json.
+  # Services send OTLP to http://lgtm.<infra namespace>.svc.cluster.local:4318.
+  lgtm:
+    enabled: true
+    image: grafana/otel-lgtm:0.8.1
+    dataSizeLimit: 2Gi
+    # Grafana under /grafana on infra.routing.host: Ingress + middlewares in the infra namespace (off in the base).
+    route:
+      enabled: false
+      path: /grafana
+      className: traefik
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+    grafanaSettings:
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"     # sign-in required (the image default is anonymous Admin)
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_AUTO_ASSIGN_ORG_ROLE: "Viewer"
+    env:
+      - name: GF_SECURITY_ADMIN_USER
+        secretKeyRef:
+          secret: infra
+          key: grafana-admin-user
+          optional: true
+      - name: GF_SECURITY_ADMIN_PASSWORD
+        secretKeyRef:
+          secret: infra
+          key: grafana-admin-password
+          optional: true
+      - name: GRAFANA_VIEWER_USER
+        secretKeyRef:
+          secret: infra
+          key: grafana-viewer-user
+          optional: true
+      - name: GRAFANA_VIEWER_PASSWORD
+        secretKeyRef:
+          secret: infra
+          key: grafana-viewer-password
+          optional: true
+    resources:
+      requests:
+        cpu: 200m
+        memory: 768Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+# KEDA autoscaling of agent-knowledge-graph-worker. Needs the KEDA operator (./deploy.sh keda installs it).
+# Off: the worker runs services.agentKnowledgeGraphWorker.replicas fixed replicas.
+keda:
+  enabled: false
+  postgres:
+    # KEDA authenticates with the shared database-url from secrets.platform (its host is an FQDN KEDA can resolve),
+    # so no raw database credentials are duplicated into this namespace. One TriggerAuthentication is shared by
+    # every scaled object below.
+    connectionKey: database-url
+  # One block per autoscaled worker; the generic template renders a ScaledObject for each enabled one. Add a
+  # worker by copying a block - no new template. `target` must be the rendered Deployment name, and that
+  # Deployment must set scaledByKeda so it omits spec.replicas and deploys never fight KEDA.
+  #   replicas = ceil(backlog / targetQueryValue), clamped to [minReplicaCount, maxReplicaCount]; 0 when idle.
+  scaledObjects:
+    agentKnowledgeGraphWorker:
+      enabled: true
+      target: agent-knowledge-graph-worker
+      minReplicaCount: 0
+      maxReplicaCount: 1      # one LM Studio host = one worker; raise only with more LLM capacity
+      pollingInterval: 15     # seconds between queue checks
+      cooldownPeriod: 300     # idle seconds before scaling back to 0
+      targetQueryValue: 1     # episodes per pod: keep equal to WORKER_CONCURRENCY
+      activationTargetQueryValue: 0
+      # Backlog = episodes being extracted + episodes due now (rows waiting out a retry backoff do not count).
+      query: >-
+        SELECT COUNT(*) FROM knowledge_episodes
+        WHERE status = 'processing' OR (status = 'queued' AND available_at <= now())
+    atsOrchestratorOnboarding:
+      enabled: true
+      target: ats-orchestrator-onboarding
+      minReplicaCount: 0
+      maxReplicaCount: 3
+      pollingInterval: 15
+      cooldownPeriod: 300
+      targetQueryValue: 4     # runs per pod: keep equal to TEMPORAL_MAX_CONCURRENT_ACTIVITIES
+      activationTargetQueryValue: 0
+      # The backlog is read from our own workflow_runs projection rather than from Temporal, so KEDA needs no
+      # engine credentials and no extra scaler. A run whose projection write failed can hold a replica up until
+      # it is reconciled - visible, bounded by maxReplicaCount, and the price of not coupling KEDA to Temporal.
+      query: >-
+        SELECT COUNT(*) FROM workflow_runs
+        WHERE task_queue = 'onboarding' AND status IN ('queued', 'running')
+    atsOrchestratorBulkMatch:
+      enabled: true
+      target: ats-orchestrator-bulk-match
+      minReplicaCount: 0
+      maxReplicaCount: 2
+      pollingInterval: 15
+      cooldownPeriod: 300
+      # The opposite shape to the onboarding queue, which is many short runs sharing a pod. A bulk run is long
+      # (hours) and there are few of them, and one worker already grades BULK_MATCH_CONCURRENCY subjects at once:
+      # so one replica per in-flight run, up to a low ceiling that caps what the platform as a whole can aim at
+      # the screening agent. More pods than runs would not finish a single run any sooner.
+      targetQueryValue: 1
+      activationTargetQueryValue: 0
+      query: >-
+        SELECT COUNT(*) FROM workflow_runs
+        WHERE task_queue = 'bulk-match' AND status IN ('queued', 'running')
+
+# ------------------------------------------------------------------------------------------- schema migration
+# Helm hook (post-install, pre-upgrade): create database -> alembic upgrade head -> optional seed.
+schema:
+  enabled: true
+  image:
+    repository: schema
+  config:
+    APP_ENV: "DEV"
+    LOG_LEVEL: "INFO"
+    LOG_JSON: "true"
+    CREATE_DATABASE: "true"          # CREATE DATABASE ats_platform when missing
+    MAINTENANCE_DATABASE: "postgres"
+    SEED_DEMO_DATA: "false"          # dev turns this on; never in PROD
+    DATABASE_NAME: "ats_platform"    # overrides the database name in the secret's database-url
+  env:
+    - name: DATABASE_URL
+      secretKeyRef:
+        secret: platform
+        key: database-url
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ------------------------------------------------------------------------------------------- auth (every service)
+# ConfigMap auth-config, in the envFrom of every ATS service: who signs the tokens and where its public keys and
+# token endpoint are. Services verify every token locally (ES256) with the keys from AUTH_JWKS_URL, fetched once
+# and refetched only for an unknown kid (key rotation): no per-request call to the auth-service.
+authConfig:
+  AUTH_ISSUER: "http://auth-service"
+  AUTH_JWKS_URL: "http://auth-service/.well-known/jwks.json"
+  AUTH_TOKEN_URL: "http://auth-service/oauth/token"
+
+# =================================================================================================== backends
+# The backend model (rendered by templates/services/backend.yaml + config.yaml, one generic template each):
+#
+#   services:  public-capable product/platform backends (UI, orchestrator, auth). May declare a `route`.
+#   agents:    internal agents (MCP servers, the ingest worker). Never exposed; reached in-cluster only.
+#
+# The split is for human clarity only - both maps are rendered identically. The map KEY is camelCase; the object /
+# Service / DNS name is its kebab-case (atsUi -> ats-ui), or the block's `name`. One block = one backend; copy a
+# block to add one.
+#
+# A block (all keys optional unless noted):
+#   enabled        (required) false skips the whole block.
+#   replicas       Deployment replicas (ignored when scaledByKeda + keda.enabled).
+#   image          {repository, optional registry, optional tag}; or imageFrom: <otherKey> to reuse its image.
+#   containerName  the container name.
+#   command/args   override the image entrypoint (the worker runs a module).
+#   ports          containerPorts.
+#   service        present => a ClusterIP Service is rendered (service.ports). Absent => no Service (the worker).
+#   config         present => ConfigMap <name>-config (its env settings). Values go through tpl.
+#   envFrom        ConfigMaps mounted as env (<name>-config, llm-config, auth-config); each adds a
+#                  checksum/* annotation so the pod rolls when that ConfigMap changes.
+#   env            [{name, value}] or [{name, secretKeyRef: {secret: platform|infra, key, optional}}]. Secrets are
+#                  referenced by name, never rendered (files/secret.example.*.yaml lists the keys).
+#   probes/resources/securityContext/volumes  as in a PodSpec.
+#   networkPolicy  who may reach it / what it may reach (see ats.networkPolicy); absent => no NetworkPolicy.
+#   volumeClaims   [{name, size, storageClassName}] PVCs kept on uninstall (the guardrail model cache).
+#   route          present + enabled => reachable from outside (Traefik IngressRoute, templates/routing). EXPOSE
+#                  NOTHING BY DEFAULT: without a route a backend is cluster-internal. Only the UI has one.
+#   oauthClients   (auth-service only) service clients of the client_credentials grant.
+#   component/scaledByKeda  the knowledge-graph pods share a component label; the worker is scaled by KEDA.
+services:
+  # auth-service: sign-in (cookies, rotating refresh tokens), user management, ES256 tokens + JWKS, OAuth2
+  # client_credentials for services. Stateless (Redis + Postgres), so it may run more than one replica.
+  authService:
+    enabled: true
+    replicas: 1
+    image:
+      repository: auth-service
+    containerName: auth
+    ports:
+      - name: http
+        containerPort: 8004
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - auth-service-config
+      - auth-config
+    # Service clients of the client_credentials grant: caller -> services it may get tokens for (the one place for
+    # this policy; rendered into OAUTH_CLIENT_AUDIENCES). Each caller's secret is key client-secret-<caller> of
+    # secrets.platform: the auth-service reads it as CLIENT_SECRET_<CALLER>, the caller as SERVICE_CLIENT_SECRET.
+    # The called services still check ALLOWED_CALLERS / TOOL_POLICY themselves.
+    oauthClients:
+      ats-orchestrator:
+        - agent-skill
+        - agent-compute
+        - agent-knowledge-graph
+        - agent-guardrail
+        - agent-document
+        - registry-service        # resolve_skill: the client's activated domain pack
+      # The onboarding worker shares the orchestrator's image but not its grant: onboarding only scans, indexes
+      # and ingests, so it never gets a token for the screening agent or the code sandbox. A worker is the most
+      # exposed thing in the system - it processes whatever a tenant uploads - and this is where that is bounded.
+      ats-orchestrator-onboarding:
+        - agent-guardrail
+        - agent-knowledge-graph
+        - registry-service        # resolve_skill: the pack supplying the ontology it extracts under
+      # The bulk-match worker shares the orchestrator's image but not its grant either: grading a pool is
+      # screen_candidate plus the pack version it pins the run to, and nothing else. No guardrail, no knowledge
+      # graph, no code sandbox - a job that walks a whole tenant's candidates is the last place to be generous.
+      ats-orchestrator-bulk-match:
+        - agent-skill             # screen_candidate: every subject in the pool is graded through it
+        - registry-service        # resolve_skill: one pack version pinned for the whole run
+      agent-knowledge-graph:
+        - agent-guardrail
+      # agent-document injection-scans extracted text through the guardrail before returning it.
+      agent-document:
+        - agent-guardrail
+      # agent-skill resolves the skill version it must run from the registry (resolve_skill), so that activating
+      # a version in the admin UI changes what the agent actually executes.
+      agent-skill:
+        - registry-service
+      # registry-service gets service tokens for the auth-service (delegated identity API: users, roles, invites).
+      # (To let it invoke the other MCP servers through the tool-catalogue proxy, add their audiences here AND add
+      #  registry-service to each server's ALLOWED_CALLERS/TOOL_POLICY - a later step; none call it yet.)
+      registry-service:
+        - auth-service
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      DATABASE_NAME: "ats_platform"     # overrides the database name in the secret's database-url
+      ACCESS_TOKEN_MINUTES: "5"
+      REFRESH_TOKEN_DAYS: "1"
+      SERVICE_TOKEN_MINUTES: "5"
+      COOKIE_SECURE: "true"
+      LOGIN_MAX_FAILURES: "5"           # per username, 15-minute lock
+      CLIENT_AUTH_MAX_FAILURES: "5"     # per service client, 15-minute lock
+      CORS_ORIGINS: ""                  # browser calls go through the frontend proxy (same origin)
+      # Delegated identity: only registry-service may call /api/v1/identity (service token, aud auth-service).
+      IDENTITY_ALLOWED_CALLERS: "registry-service"
+      # Accept-invite page the invite link points at: the admin-ui invite screen on the shared host.
+      INVITE_BASE_URL: "http://{{ .Values.infra.routing.host }}/agent-factory/invite"
+      # Versioned password pepper: 0 = no pepper (existing bcrypt hashes keep working; nothing to configure). To turn
+      # it on, put login-pepper-v1 in agent-factory-secrets (wired below as LOGIN_PEPPER_V1) and set this to "1".
+      LOGIN_PEPPER_CURRENT_VERSION: "0"
+    env:
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: REDIS_URL
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+      - name: AUTH_SIGNING_KEY          # PEM, EC P-256 (./deploy.sh init --generate-secrets creates it)
+        secretKeyRef:
+          secret: platform
+          key: auth-signing-key
+      - name: AUTH_SIGNING_KEY_PREVIOUS # only during a key rotation (docs/security_auth.md)
+        secretKeyRef:
+          secret: platform
+          key: auth-signing-key-previous
+          optional: true
+      - name: INVITE_SIGNING_KEY        # HMAC key for signed invite tokens (fetched lazily; invites fail without it)
+        secretKeyRef:
+          secret: platform
+          key: invite-signing-key
+          optional: true
+      - name: LOGIN_PEPPER_V1           # only read when LOGIN_PEPPER_CURRENT_VERSION >= 1 (optional until then)
+        secretKeyRef:
+          secret: platform
+          key: login-pepper-v1
+          optional: true
+    # Ingress: any pod of the release namespace (frontend proxy, services fetching JWKS / tokens). Egress: DNS,
+    # Postgres + Redis in the infra namespace, OTLP to lgtm.
+    networkPolicy:
+      name: auth-service-traffic
+      # No ingress.callers => any pod of the release namespace may reach it (frontend proxy, services fetching JWKS).
+      egress:
+        dns: true
+        infraPeers:
+          - appName: postgres
+            port: 5432
+          - appName: redis
+            port: 6379
+          - appName: lgtm
+            port: 4318
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 15
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+
+  # Orchestrator API (FastAPI /api/v1 + LangGraph assistant). One replica per LM Studio host (in-process queue).
+  atsOrchestrator:
+    enabled: true
+    replicas: 1
+    image:
+      repository: ats-orchestrator
+    containerName: orchestrator
+    ports:
+      - name: http
+        containerPort: 5000
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - ats-orchestrator-config
+      - llm-config
+      - auth-config
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      LLM_MAX_CONCURRENCY: "5"          # assistant turns running at once (others queue)
+      AGENT_MCP_URL: "http://agent-skill/mcp"
+      COMPUTE_MCP_URL: "http://agent-compute/mcp"
+      KNOWLEDGE_MCP_URL: "http://agent-knowledge-graph/mcp"   # empty = knowledge graph off
+      GUARDRAILS_MCP_URL: "http://agent-guardrail/mcp"         # empty = local pattern checks only
+      MAX_STEPS_PER_REQUEST: "10"       # per user request, across all agents (LLM calls, tools, code runs)
+      AGENT_TIMEOUT_S: "1800"
+      SKILL_VERSION: ""                 # empty = agent default skill version
+      # Domain pack: the client's activated pack supplies the knowledge guidance and ontology. All-or-nothing -
+      # an incomplete pack falls back to the packaged ones rather than half-applying (knowledge/pack_guidance.py).
+      PACK_DOMAIN: "ats"
+      PACK_SKILL_NAME: "ats_screening"
+      REGISTRY_MCP_URL: "http://registry-service"
+      REGISTRY_TIMEOUT_S: "10"
+      # Durable journeys. Empty address = no engine, and the orchestrator keeps using its in-process path,
+      # so this follows infra.temporal.enabled automatically instead of being a second switch to remember.
+      TEMPORAL_ADDRESS: '{{ if .Values.infra.temporal.enabled }}temporal.{{ .Values.infra.namespace }}.svc.cluster.local:7233{{ end }}'
+      TEMPORAL_NAMESPACE: "{{ .Values.infra.temporal.defaultNamespace }}"
+      ONBOARDING_TASK_QUEUE: "onboarding"   # KEDA scales the worker on exactly this queue (keda.scaledObjects)
+      CORS_ORIGINS: ""                  # browser calls go through the frontend proxy (same origin)
+      MAX_PDF_MB: "10"
+      MAX_REQUEST_MB: "25"
+      BLOB_BACKEND: "postgres"
+      DATABASE_NAME: "ats_platform"     # overrides the database name in the secret's database-url
+    env:
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: REDIS_URL
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+      - name: LLM_GATEWAY_KEY
+        secretKeyRef:
+          secret: platform
+          key: llm-gateway-key
+      - name: SERVICE_CLIENT_SECRET     # client_credentials secret (services.authService.oauthClients)
+        secretKeyRef:
+          secret: platform
+          key: client-secret-ats-orchestrator
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 20
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 768Mi
+
+  # Frontend (Next.js under routing.basePath). /api/backend/* is proxied to the orchestrator (sign-in and user
+  # management: to the auth-service).
+  atsUi:
+    enabled: true
+    replicas: 1
+    image:
+      repository: ats-ui
+    containerName: frontend
+    ports:
+      - name: http
+        containerPort: 3000
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - ats-ui-config
+    config:
+      INTERNAL_BACKEND_URL: "http://ats-orchestrator"   # every /api/v1 path except auth/* and admin/*
+      INTERNAL_AUTH_URL: "http://auth-service"             # /api/v1/auth/* and /api/v1/admin/*
+      MAX_REQUEST_MB: "25"
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+    readinessProbe:
+      tcpSocket:
+        port: http
+      periodSeconds: 10
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    # Recruiter UI on the shared host under its base path (/ats, incl. /ats/admin). One IngressRoute (in the infra
+    # namespace) for the base path, plus two higher-priority rules with stricter rate limits for login and chat turns.
+    route:
+      enabled: true
+      entryPoints:
+        - web
+        - websecure
+      # service/port default to this backend (ats-ui / http).
+      rules:
+        - match: 'Host(`{{ .Values.infra.routing.host }}`) && PathPrefix(`{{ .Values.infra.routing.basePath }}`)'
+          middlewares:
+            - security-headers
+            - rate-limit
+        - match: 'Host(`{{ .Values.infra.routing.host }}`) && PathPrefix(`{{ .Values.infra.routing.basePath }}/api/backend/v1/auth/`)'
+          priority: 1000
+          middlewares:
+            - security-headers
+            - rate-limit-auth
+        - match: 'Host(`{{ .Values.infra.routing.host }}`) && Method(`POST`) && PathRegexp(`^{{ .Values.infra.routing.basePath }}/api/backend/v1/chats/[^/]+/messages$`)'
+          priority: 1000
+          middlewares:
+            - security-headers
+            - rate-limit-turns
+
+  # admin-ui: the admin & authoring console (Next.js). Public-capable (its own route /admin on the shared host); it
+  # proxies server-side to registry-service and the auth-service, so no backend URL or token reaches the browser.
+  adminUi:
+    enabled: true
+    replicas: 1
+    image:
+      repository: admin-ui
+    containerName: frontend
+    ports:
+      - name: http
+        containerPort: 3000
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - admin-ui-config
+    config:
+      NEXT_BASE_PATH: "/agent-factory"               # served under /agent-factory (pages, assets, API proxy)
+      INTERNAL_REGISTRY_URL: "http://registry-service"   # /api/v1/factory/*, /api/v1/mcp/*, /api/v1/notifications
+      INTERNAL_AUTH_URL: "http://auth-service"        # /api/v1/auth/* (login, refresh, logout, me, invite accept)
+      MAX_REQUEST_MB: "5"
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+    readinessProbe:
+      tcpSocket:
+        port: http
+      periodSeconds: 10
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    # Admin console (the registry-service plane) on the shared host under /agent-factory (NEXT_BASE_PATH above must match).
+    # `admin: true` makes the gateway add the hardening chain to every rule here (WAF + IP allow-list + basic-auth +
+    # the tight admin rate limit, each if enabled in infra.routing); HTTPS only (no plain-web entry point). This is
+    # defense in depth on top of the app's JWKS auth + default-deny IAM + admin-role checks.
+    route:
+      enabled: true
+      admin: true
+      entryPoints:
+        - websecure
+      # service/port default to this backend (admin-ui / http).
+      rules:
+        - match: 'Host(`{{ .Values.infra.routing.host }}`) && PathPrefix(`/agent-factory`)'
+          middlewares:
+            - security-headers
+
+# =================================================================================================== agents
+# Internal agents (MCP servers + the ingest worker). Same block shape as a service, but never exposed (no route):
+# the orchestrator and the UI reach them in-cluster by Service DNS.
+agents:
+  # Screening agent (MCP server, cluster-internal only).
+  agentSkill:
+    enabled: true
+    replicas: 1
+    image:
+      repository: agent-skill
+    containerName: agent
+    ports:
+      - name: http
+        containerPort: 8001
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - agent-skill-config
+      - llm-config
+      - auth-config
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      DEFAULT_SKILL_NAME: "ats_screening"
+      DEFAULT_SKILL_VERSION: "v1"
+      HISTORY_WINDOW: "12"
+      HISTORY_ENTRIES: "20"
+      ALLOWED_CALLERS: "ats-orchestrator,ats-orchestrator-bulk-match"
+      # The bulk worker grades, it never holds a conversation: screen_candidate only, no ask_agent/cancel_request.
+      TOOL_POLICY: "ats-orchestrator=screen_candidate|ask_agent|cancel_request,ats-orchestrator-bulk-match=screen_candidate"
+      DATABASE_NAME: "ats_platform"     # overrides the database name in the secret's database-url
+      # Skill resolution: the version activated in the admin UI wins; the packaged module under
+      # skills/<name>/<version>.py is the fallback when the registry is unreachable or has no version.
+      SKILL_DOMAIN: "ats"
+      REGISTRY_MCP_URL: "http://registry-service"
+      REGISTRY_TIMEOUT_S: "10"
+    env:
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: REDIS_URL
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+      - name: LLM_GATEWAY_KEY
+        secretKeyRef:
+          secret: platform
+          key: llm-gateway-key
+      - name: SERVICE_CLIENT_SECRET     # client_credentials secret (services.authService.oauthClients)
+        secretKeyRef:
+          secret: platform
+          key: client-secret-agent-skill
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 20
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 768Mi
+
+  # Knowledge-graph MCP server (ingest queue, episode status, search, forget). Shares its ConfigMap and image with
+  # the worker.
+  agentKnowledgeGraph:
+    enabled: true
+    replicas: 1
+    component: knowledge-graph        # shared with the worker; the FalkorDB NetworkPolicy admits this component
+    image:
+      repository: agent-knowledge-graph
+    containerName: knowledge
+    ports:
+      - name: http
+        containerPort: 8002
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - agent-knowledge-graph-config
+      - llm-config
+      - auth-config
+    # Only the listed callers may call the knowledge-graph MCP server (keep in line with ALLOWED_CALLERS / TOOL_POLICY).
+    networkPolicy:
+      name: agent-knowledge-graph-callers
+      ingress:
+        callers:
+          - ats-orchestrator
+          - ats-orchestrator-onboarding
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+      DATABASE_NAME: "ats_platform"
+      FALKORDB_HOST: "falkordb.{{ .Values.infra.namespace }}.svc.cluster.local"
+      FALKORDB_PORT: "6379"
+      GRAPH_CACHE_SIZE: "64"
+      GRAPH_TIMEOUT_S: "3600"
+      LLM_CONCURRENCY: "2"              # extraction uses 2 of LM Studio's 5 slots; the rest stay free for chat
+      SEMANTIC_CACHE_ENABLED: "true"
+      SEMANTIC_CACHE_DISTANCE: "0.08"
+      SEMANTIC_CACHE_TTL_S: "86400"
+      REDIS_DB: "0"                     # the semantic cache (vector search) only works in database 0
+      WORKER_CONCURRENCY: "1"
+      WORKER_LEASE_S: "4200"
+      WORKER_MAX_ATTEMPTS: "3"
+      # The onboarding worker may only add episodes: it never reads, searches or forgets another run's knowledge.
+      ALLOWED_CALLERS: "ats-orchestrator,ats-orchestrator-onboarding"
+      TOOL_POLICY: "ats-orchestrator=ingest_episode|get_episode|search_knowledge|forget_source|update_entity|list_episodes|cancel_request,ats-orchestrator-onboarding=ingest_episode"
+    env:
+      - name: SERVICE_CLIENT_SECRET     # client_credentials secret (services.authService.oauthClients)
+        secretKeyRef:
+          secret: platform
+          key: client-secret-agent-knowledge-graph
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: LLM_GATEWAY_KEY
+        secretKeyRef:
+          secret: platform
+          key: llm-gateway-key
+      - name: FALKORDB_PASSWORD
+        secretKeyRef:
+          secret: platform
+          key: falkordb-password
+      - name: REDIS_URL                 # the platform Redis; REDIS_DB "0" (config) selects database 0
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 20
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 768Mi
+
+  # Knowledge-graph ingestion worker: reuses agentKnowledgeGraph's image (imageFrom) and ConfigMap (envFrom); no
+  # Service (no `service` block) and no route. With keda.enabled KEDA owns the replica count, so spec.replicas is
+  # omitted (scaledByKeda); `replicas` applies only without KEDA.
+  agentKnowledgeGraphWorker:
+    enabled: true
+    replicas: 1
+    component: knowledge-graph
+    imageFrom: agentKnowledgeGraph
+    scaledByKeda: true
+    containerName: worker
+    command:
+      - python
+      - -m
+      - agent_knowledge_graph.worker
+    terminationGracePeriodSeconds: 600   # lets a running extraction finish; otherwise the lease retries it
+    envFrom:
+      - agent-knowledge-graph-config
+      - llm-config
+      - auth-config
+    env:
+      - name: SERVICE_NAME              # its own name in logs and traces (the ConfigMap is shared)
+        value: "agent-knowledge-graph-worker"
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: LLM_GATEWAY_KEY
+        secretKeyRef:
+          secret: platform
+          key: llm-gateway-key
+      - name: FALKORDB_PASSWORD
+        secretKeyRef:
+          secret: platform
+          key: falkordb-password
+      - name: REDIS_URL                 # the platform Redis; REDIS_DB "0" (config) selects database 0
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  # Onboarding worker (J1): polls the `onboarding` Temporal task queue and runs the onboard_subject journey.
+  # Same image and same code as the orchestrator API, separate Deployment because the two scale on different
+  # signals - the API on request rate, this on the queue's backlog (keda.scaledObjects.atsOrchestratorOnboarding).
+  # Turn on together with infra.temporal.enabled: without an engine address the worker exits rather than idling.
+  atsOrchestratorOnboarding:
+    enabled: false
+    replicas: 1
+    component: ats
+    imageFrom: atsOrchestrator
+    scaledByKeda: true
+    containerName: worker
+    automountServiceAccountToken: false
+    command:
+      - python
+      - -m
+      - ats_orchestrator.worker
+    # Longer than the worker's own graceful shutdown, so a rolling deploy lets an indexing activity finish
+    # instead of having it retried from the start on another pod.
+    terminationGracePeriodSeconds: 120
+    envFrom:
+      - ats-orchestrator-config
+      - llm-config
+      - auth-config
+    env:
+      - name: SERVICE_NAME              # its own name in logs and traces (the ConfigMap is shared with the API)
+        value: "ats-orchestrator-onboarding"
+      - name: WORKER_QUEUE              # named here rather than left to the code default: which queue a worker
+        value: "onboarding"             # polls is a deployment decision, and the KEDA query below must match it
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: REDIS_URL
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+      - name: LLM_GATEWAY_KEY           # embeddings for the indexing activity
+        secretKeyRef:
+          secret: platform
+          key: llm-gateway-key
+      - name: SERVICE_CLIENT_SECRET     # its own client_credentials identity, with its own narrower grant
+        secretKeyRef:
+          secret: platform
+          key: client-secret-ats-orchestrator-onboarding
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 768Mi
+
+  # Bulk-match worker (J3): polls the `bulk-match` Temporal task queue and grades a whole candidate pool against
+  # one job description. Same image and code as the orchestrator API, but its own Deployment and its own queue:
+  # a thousand-candidate run lasting hours must never be able to delay a recruiter's upload, and a shared queue
+  # would still share workers whatever the priorities say.
+  # Unlike the onboarding worker it reads a ConfigMap of its own instead of the API's, so it is never handed the
+  # knowledge-graph, guardrail or compute addresses it has no grant to call.
+  # Turn on together with infra.temporal.enabled: without an engine address the worker exits rather than idling.
+  atsOrchestratorBulkMatch:
+    enabled: false
+    replicas: 1
+    component: ats
+    imageFrom: atsOrchestrator
+    scaledByKeda: true
+    containerName: worker
+    automountServiceAccountToken: false
+    command:
+      - python
+      - -m
+      - ats_orchestrator.worker
+    # Longer than the worker's own graceful shutdown, so a rolling deploy lets the subjects already being graded
+    # finish instead of paying for those LLM calls again on another pod.
+    terminationGracePeriodSeconds: 120
+    envFrom:
+      # No llm-config either: the model aliases are agent-skill's business, not this worker's.
+      - ats-orchestrator-bulk-match-config
+      - auth-config
+    config:
+      SERVICE_NAME: "ats-orchestrator-bulk-match"   # its name in logs and traces, and its service-token identity
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      # Which queue `python -m ats_orchestrator.worker` polls: one image, one entrypoint, one Deployment per
+      # queue, so each scales on its own backlog. Must match the task_queue of the KEDA query below.
+      WORKER_QUEUE: "bulk-match"
+      # Screening agent: a bulk run grades every subject through screen_candidate. The knowledge-graph, guardrail
+      # and compute addresses are deliberately absent - this journey calls none of them, and an address it has no
+      # token for would only invite someone to wire it up later without widening the grant on purpose.
+      AGENT_MCP_URL: "http://agent-skill/mcp"
+      AGENT_TIMEOUT_S: "1800"
+      LLM_MAX_CONCURRENCY: "5"
+      SKILL_VERSION: ""                 # empty = agent default skill version
+      # Domain pack: the client's activated pack supplies the screening skill the run grades with, resolved
+      # through the registry so a run lasting hours keeps grading everyone against one version.
+      PACK_DOMAIN: "ats"
+      PACK_SKILL_NAME: "ats_screening"
+      REGISTRY_MCP_URL: "http://registry-service"
+      REGISTRY_TIMEOUT_S: "10"
+      # Durable journeys. Empty address = no engine, and this worker exits rather than idling, so it follows
+      # infra.temporal.enabled automatically instead of being a second switch to remember.
+      TEMPORAL_ADDRESS: '{{ if .Values.infra.temporal.enabled }}temporal.{{ .Values.infra.namespace }}.svc.cluster.local:7233{{ end }}'
+      TEMPORAL_NAMESPACE: "{{ .Values.infra.temporal.defaultNamespace }}"
+      BULK_MATCH_TASK_QUEUE: "bulk-match"   # the queue the API starts runs on; keep equal to WORKER_QUEUE
+      BULK_MATCH_TIMEOUT_S: "21600"     # 6 hours: a full pool, one LLM call per subject, with retries
+      BULK_MATCH_PAGE_SIZE: "50"        # subjects per selection activity: bounds one activity's memory
+      BULK_MATCH_CONCURRENCY: "8"       # subjects graded at once - the real throttle on screening-agent load
+      BULK_MATCH_MAX_SUBJECTS: "1000"   # ceiling on one run; raised deliberately here, never per request
+      BULK_MATCH_TOP_N: "50"            # how many results the run summary carries
+      BLOB_BACKEND: "postgres"
+      DATABASE_NAME: "ats_platform"     # overrides the database name in the secret's database-url
+    env:
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: REDIS_URL
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+      # No LLM_GATEWAY_KEY: this worker makes no model calls. It selects subjects with a SQL query and
+      # grades them through agent-skill, which holds the gateway key and does every model call itself.
+      # A credential a process cannot use is a credential it should not be able to leak.
+      - name: SERVICE_CLIENT_SECRET     # its own client_credentials identity, with its own narrower grant
+        secretKeyRef:
+          secret: platform
+          key: client-secret-ats-orchestrator-bulk-match
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 768Mi
+
+  # Document-reader agent (MCP server, cluster-internal only): extracts text, tables and metadata from
+  # PDF / DOCX / XLSX, injection-scans the extracted text through agent-guardrail, and optionally chunks and
+  # embeds it. Stateless: no database, no Redis; bounded by MAX_FILE_BYTES / MAX_TEXT_CHARS per request.
+  agentDocument:
+    enabled: true
+    replicas: 1
+    image:
+      repository: agent-document
+    containerName: document
+    automountServiceAccountToken: false
+    ports:
+      - name: http
+        containerPort: 8006
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - agent-document-config
+      - llm-config
+      - auth-config
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      ALLOWED_CALLERS: "ats-orchestrator"
+      TOOL_POLICY: "ats-orchestrator=read_document|scan_document|chunk_document"
+      # Injection scanning through the shared guardrail. Empty would mean local pattern checks only.
+      GUARDRAIL_MCP_URL: "http://agent-guardrail/mcp"
+      GUARDRAIL_TIMEOUT_S: "20"
+      # Per-request bounds (memory): raise together with the resource limits below.
+      MAX_FILE_BYTES: "10485760"
+      MAX_TEXT_CHARS: "500000"
+      PARSE_CONCURRENCY: "4"
+      # Extraction tiers: "auto" probes each PDF and picks fast (pypdfium2, text only), tables (pdfplumber,
+      # ruled tables) or docling (layout ML, optional OCR). The docling tier is OFF unless the image was built
+      # with the optional extra (docker build --build-arg WITH_DOCLING=1), which also bakes the models into
+      # /models and sets DOCLING_ARTIFACTS_PATH there; with a plain image the router falls back to the lighter
+      # tiers, so "auto" is safe on every image.
+      DOCUMENT_EXTRACTOR: "auto"
+      # DOCLING_ARTIFACTS_PATH is deliberately NOT set here. A docling-built image bakes the models and sets
+      # it to /models itself, and a ConfigMap entry - even an empty one - would override that and send the
+      # service looking for models it would then try to download on a user's request.
+      DOCLING_OCR: "false"
+      # One document's parse at any tier. It frees the caller, not the worker thread: a pathological file
+      # keeps one parse slot busy until it finishes, which is bounded by PARSE_CONCURRENCY.
+      EXTRACT_TIMEOUT_S: "300"
+      # Routing thresholds: below MIN_CHARS_PER_PAGE a PDF counts as image-heavy (docling + OCR); at or above
+      # TABLE_LINE_THRESHOLD ruled-line objects a page is treated as a real table. The line threshold is low
+      # on purpose: reading a table-less page with the tables tier costs milliseconds, while missing a real
+      # table turns a policy's exclusions into a stream of words.
+      ROUTE_MIN_CHARS_PER_PAGE: "120"
+      ROUTE_TABLE_LINE_THRESHOLD: "6"
+    env:
+      - name: SERVICE_CLIENT_SECRET     # client_credentials secret (services.authService.oauthClients)
+        secretKeyRef:
+          secret: platform
+          key: client-secret-agent-document
+      - name: LLM_GATEWAY_KEY           # only used when chunk_document embeds
+        secretKeyRef:
+          secret: platform
+          key: llm-gateway-key
+    # Ingress only from its callers (keep in line with ALLOWED_CALLERS). Egress: DNS, the auth-service (JWKS +
+    # service tokens), the guardrail it scans with, the LLM gateway it embeds with, and the OTLP ports of lgtm.
+    networkPolicy:
+      name: agent-document-traffic
+      ingress:
+        callers:
+          - ats-orchestrator
+      egress:
+        dns: true
+        authService: true
+        lgtm: true
+        infraPeers:
+          - appName: llm-gateway
+            port: 80
+        releasePeers:
+          - appName: agent-guardrail
+            port: 8003
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 15
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  # Guardrail agent (MCP server): injection classifier (Hugging Face model, CPU torch) + NeMo input rails.
+  # /healthz is 503 until the model is loaded (first start downloads ~700 MB into the modelCache PVC).
+  agentGuardrail:
+    enabled: true
+    replicas: 1
+    image:
+      repository: agent-guardrail
+    containerName: guardrail
+    automountServiceAccountToken: false
+    ports:
+      - name: http
+        containerPort: 8003
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - agent-guardrail-config
+      - auth-config
+    # Ingress only from its callers (keep in line with ALLOWED_CALLERS). Egress: DNS, HTTPS (the model download),
+    # the auth-service (JWKS to verify service tokens) and the OTLP ports of lgtm.
+    networkPolicy:
+      name: agent-guardrail-traffic
+      ingress:
+        callers:
+          - ats-orchestrator
+          - ats-orchestrator-onboarding
+          - agent-knowledge-graph
+          - agent-document
+      egress:
+        dns: true
+        https: true
+        authService: true
+        lgtm: true
+    # Model cache (~700 MB Hugging Face model) on a PVC kept on uninstall, so a restart does not download it again.
+    volumeClaims:
+      - name: agent-guardrail-models
+        size: 3Gi
+        storageClassName: ""
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      ALLOWED_CALLERS: "ats-orchestrator,ats-orchestrator-onboarding,agent-knowledge-graph,agent-document"
+      TOOL_POLICY: "ats-orchestrator=check_text,ats-orchestrator-onboarding=check_text,agent-knowledge-graph=check_text,agent-document=check_text"
+      CLASSIFIER_MODEL: "protectai/deberta-v3-base-prompt-injection-v2"
+      CLASSIFIER_THRESHOLD: "0.5"
+      CLASSIFIER_THREADS: "2"           # torch CPU threads; keep <= the CPU limit
+      CLASSIFIER_CONCURRENCY: "2"
+      MODEL_CACHE_DIR: "/models"
+      HF_HOME: "/models"
+    env:
+      - name: HF_TOKEN                  # only needed for gated models
+        secretKeyRef:
+          secret: platform
+          key: hf-key
+          optional: true
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      fsGroup: 10001
+    # The model load takes 1-2 minutes (longer on the first start: download). The startup probe allows 10 minutes;
+    # liveness only starts after it succeeded.
+    startupProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      failureThreshold: 57
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+      failureThreshold: 3
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 30
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1536Mi
+      limits:
+        cpu: 2000m
+        memory: 3Gi
+    volumeMounts:
+      - name: models
+        mountPath: /models
+    volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: agent-guardrail-models
+
+  # Compute agent (MCP server; runs caller-written code in agent-sandbox). Needs no database, Redis or LLM.
+  agentCompute:
+    enabled: true
+    replicas: 1
+    image:
+      repository: agent-compute
+    containerName: compute
+    automountServiceAccountToken: false
+    ports:
+      - name: http
+        containerPort: 8002
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - agent-compute-config
+      - auth-config
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      SANDBOX_URL: "http://agent-sandbox"
+      SANDBOX_RUN_TIMEOUT_S: "10"
+      ALLOWED_CALLERS: "ats-orchestrator"
+      TOOL_POLICY: "ats-orchestrator=execute_code|cancel_request"
+    # No Secret: it only verifies service tokens with the public keys (auth-config).
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 15
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+
+  # Code sandbox for the compute agent: untrusted code, so no Secret, no token, read-only root fs, no egress.
+  agentSandbox:
+    enabled: true
+    replicas: 1
+    image:
+      repository: agent-sandbox
+    containerName: sandbox
+    automountServiceAccountToken: false
+    enableServiceLinks: false
+    ports:
+      - name: http
+        containerPort: 8080
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    # Only the compute agent may reach the sandbox, and it may open no connection itself (egress denied: code that
+    # runs in it cannot reach the cluster, the database or the internet).
+    networkPolicy:
+      name: agent-sandbox-isolation
+      ingress:
+        callers:
+          - agent-compute
+      egress:
+        denyAll: true
+    env:
+      - name: MAX_CONCURRENT_RUNS
+        value: "4"
+      - name: MEMORY_LIMIT_MB
+        value: "256"
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10002
+      runAsGroup: 10002
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+    # exec probes: the NetworkPolicy only admits agent-compute, not kubelet HTTP probes
+    readinessProbe:
+      exec:
+        command:
+          - python
+          - -c
+          - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"
+      periodSeconds: 10
+    livenessProbe:
+      exec:
+        command:
+          - python
+          - -c
+          - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 1000m
+        memory: 1536Mi
+    volumeMounts:
+      - name: work
+        mountPath: /work
+      - name: tmp
+        mountPath: /tmp
+    volumes:
+      - name: work
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+
+  # registry-service: the admin & authoring plane (skills/versions/approvals, IAM policy & groups, delegated
+  # user/client/project admin, notifications, MCP tool-catalogue proxy). Internal service: NO route - the admin-ui
+  # reaches it in-cluster through its own server-side proxy. One contract reached two ways: the hardened REST wrapper
+  # (/api/v1/factory/* and /api/v1/mcp/*) and the MCP front door (/mcp, default deny until an agent is allow-listed).
+  registryService:
+    enabled: true
+    replicas: 1
+    image:
+      repository: registry-service
+    containerName: registry-service
+    ports:
+      - name: http
+        containerPort: 8005
+    service:
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+    envFrom:
+      - registry-service-config
+      - auth-config
+    config:
+      APP_ENV: "DEV"
+      LOG_LEVEL: "INFO"
+      LOG_JSON: "true"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm.{{ .Values.infra.namespace }}.svc.cluster.local:4318"
+      DATABASE_NAME: "ats_platform"     # overrides the database name in the secret's database-url
+      # Delegated identity: registry-service calls the auth-service identity API with a service token (aud auth-service).
+      AUTH_SERVICE_BASE_URL: "http://auth-service"
+      AUTH_SERVICE_AUDIENCE: "auth-service"
+      # Hardened REST wrapper (docs/impl_agent_factory.md section 3). Browser calls go through the admin-ui proxy
+      # (same origin), so no CORS allow-list is needed here, like the orchestrator / auth-service.
+      MAX_REQUEST_KB: "256"             # admin payloads (a skill version's files) are larger than a login
+      CORS_ORIGINS: ""
+      RATE_LIMIT_PER_MINUTE: "120"      # per-principal app-side rate limit (0 disables the hook)
+      # MCP front door (default deny): agent-skill resolves the version it must run; it may call nothing else.
+      ALLOWED_CALLERS: "agent-skill,ats-orchestrator,ats-orchestrator-onboarding,ats-orchestrator-bulk-match"
+      TOOL_POLICY: "agent-skill=resolve_skill,ats-orchestrator=resolve_skill,ats-orchestrator-onboarding=resolve_skill,ats-orchestrator-bulk-match=resolve_skill"
+      # Tool-catalogue proxy: the MCP servers the admin UI may browse/invoke through registry-service, as
+      # "name=base_url|audience,...". Each audience is the called service's service-token audience (its name).
+      MCP_REGISTRY: "agent-skill=http://agent-skill|agent-skill,agent-compute=http://agent-compute|agent-compute,agent-knowledge-graph=http://agent-knowledge-graph|agent-knowledge-graph,agent-guardrail=http://agent-guardrail|agent-guardrail"
+    env:
+      - name: DATABASE_URL
+        secretKeyRef:
+          secret: platform
+          key: database-url
+      - name: REDIS_URL
+        secretKeyRef:
+          secret: platform
+          key: redis-url
+      - name: SERVICE_CLIENT_SECRET     # client_credentials secret (services.authService.oauthClients)
+        secretKeyRef:
+          secret: platform
+          key: client-secret-registry-service
+    # Ingress only from the admin-ui (its server-side proxy is the one caller today). Egress: DNS, Postgres + Redis in
+    # the infra namespace, the auth-service (JWKS + identity service tokens), the MCP servers it proxies for the tool
+    # catalogue (release namespace), and OTLP to lgtm.
+    networkPolicy:
+      name: registry-service-traffic
+      ingress:
+        callers:
+          - admin-ui
+          - agent-skill          # resolve_skill: the version the agent must run
+          - ats-orchestrator     # resolve_skill: the pack supplying knowledge guidance + ontology
+          - ats-orchestrator-onboarding   # the same pack, resolved inside the onboarding journey
+          - ats-orchestrator-bulk-match   # the same pack, pinned once for a whole bulk run
+      egress:
+        dns: true
+        authService: true
+        lgtm: true
+        infraPeers:
+          - appName: postgres
+            port: 5432
+          - appName: redis
+            port: 6379
+        releasePeers:
+          - appName: agent-skill
+            port: 8001
+          - appName: agent-compute
+            port: 8002
+          - appName: agent-knowledge-graph
+            port: 8002
+          - appName: agent-guardrail
+            port: 8003
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      initialDelaySeconds: 20
+      periodSeconds: 30
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 768Mi

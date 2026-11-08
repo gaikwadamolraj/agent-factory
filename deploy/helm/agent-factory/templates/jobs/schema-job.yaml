@@ -1,0 +1,59 @@
+{{- /* Schema migration: create database -> alembic upgrade head -> (optional) seed. Safe to re-run.
+       Helm hook post-install,pre-upgrade:
+         install: runs after all objects are ready (Postgres lives in this release, so it must exist first; the
+                  services start without the schema: their health checks do not touch tables)
+         upgrade: runs (and must succeed) before any service is updated, so new code never meets an old schema.
+       before-hook-creation deletes the previous Job first (Job specs are immutable). The ConfigMap is a hook too
+       (weight -10), so it exists before the Job (weight 0) starts. */ -}}
+{{- with .Values.schema }}
+{{- if .enabled }}
+{{- $hook := dict
+    "helm.sh/hook" "post-install,pre-upgrade"
+    "helm.sh/hook-weight" "-10"
+    "helm.sh/hook-delete-policy" "before-hook-creation" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "schema-config" "appName" "schema" "annotations" $hook) | nindent 2 }}
+data:
+  {{- range $key, $value := .config }}
+  {{ $key }}: {{ $value | toString | quote }}
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "schema-migrate" "appName" "schema" "annotations" (merge (dict "helm.sh/hook-weight" "0") $hook)) | nindent 2 }}
+spec:
+  backoffLimit: {{ .backoffLimit }}
+  activeDeadlineSeconds: {{ .activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "schema") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .podSecurityContext | nindent 8 }}
+      containers:
+        - name: schema
+          image: {{ include "ats.image" (dict "root" $ "image" .image) }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          command:
+            - python
+            - -m
+            - ats_schema
+          args:
+            - all
+          envFrom:
+            - configMapRef:
+                name: schema-config
+          env:
+            {{- include "ats.env" (dict "root" $ "env" .env) | nindent 12 }}
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.global.containerSecurityContext | nindent 12 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,35 @@
+[project]
+name = "agent-guardrail"
+version = "0.1.0"
+description = "Shared guardrails service: NeMo Guardrails input rails + Llama Prompt Guard 2 classifier + pattern checks, exposed over MCP"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "agent-common[mcp]",
+    "mcp>=2.0.0",
+    "nemoguardrails>=0.17.0",
+    "transformers>=4.46.0",
+    "torch>=2.5.0",
+    "uvicorn>=0.30.0",
+]
+
+[tool.uv.sources]
+agent-common = { path = "../../common", editable = false }
+torch = { index = "pytorch-cpu" }
+
+# CPU-only PyTorch (the classifier is small; no CUDA libraries in the image)
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

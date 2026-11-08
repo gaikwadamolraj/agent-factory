@@ -1,0 +1,46 @@
+# Production (template): what differs from values.yaml.
+# APP_ENV=PROD disables /docs, X-Served-By and permissive CORS; images come from a registry.
+# Set CORS_ORIGINS, the registry, the image tags and your real hosts before use. Nothing is exposed here: set
+# services.atsUi.route.enabled (the UI route) and infra.lgtm.route.enabled (Grafana) with your host when ready.
+
+global:
+  image:
+    registry: registry.example.com/ats   # every ATS image (services, ats-ui, schema) is pushed here
+    tag: "0.2.0"
+
+keda:
+  enabled: true      # ./deploy.sh installs the KEDA operator when it is missing
+
+schema:
+  config:
+    APP_ENV: "PROD"                  # migrations only, no demo data (SEED_DEMO_DATA stays "false")
+
+services:
+  authService:
+    config:
+      APP_ENV: "PROD"
+      LOG_LEVEL: "WARNING"
+      CORS_ORIGINS: "https://ats.example.com"
+  atsOrchestrator:
+    config:
+      APP_ENV: "PROD"
+      LOG_LEVEL: "WARNING"
+      CORS_ORIGINS: "https://ats.example.com"
+
+agents:
+  agentSkill:
+    config:
+      APP_ENV: "PROD"
+      LOG_LEVEL: "WARNING"
+  agentKnowledgeGraph:
+    config:
+      APP_ENV: "PROD"
+      LOG_LEVEL: "WARNING"
+  agentCompute:
+    config:
+      APP_ENV: "PROD"
+      LOG_LEVEL: "WARNING"
+  agentGuardrail:
+    config:
+      APP_ENV: "PROD"
+      LOG_LEVEL: "WARNING"

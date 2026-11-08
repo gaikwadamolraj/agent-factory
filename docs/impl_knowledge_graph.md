@@ -9,9 +9,9 @@ Concepts: [knowledge_graph_basics.md](knowledge_graph_basics.md). Ontology and g
 
 ```
 caller service (orchestrator today)
-  │  ats_common.knowledge.client.KnowledgeClient  (service JWT aud=ats-knowledge, timeout, retry, breaker)
+  │  agent_common.knowledge.client.KnowledgeClient  (service JWT aud=agent-knowledge-graph, timeout, retry, breaker)
   ▼
-ats-knowledge  (MCP server, /mcp)                       ats-knowledge-worker  (python -m ats_knowledge.worker)
+agent-knowledge-graph  (MCP server, /mcp)                       agent-knowledge-graph-worker  (python -m agent_knowledge_graph.worker)
   ingest_episode ──► knowledge_episodes (Postgres) ◄──── claim (FOR UPDATE SKIP LOCKED)
   get_episode                                            Graphiti.add_episode ──► FalkorDB graph <namespace>__c<client>_p<project>
   search_knowledge ─► semantic cache (Redis 8) ─► Graphiti hybrid search ─► grounded answer (LLM) ─► cache
@@ -19,15 +19,15 @@ ats-knowledge  (MCP server, /mcp)                       ats-knowledge-worker  (p
   cancel_request
 ```
 
-Two processes from one image (details and file layout: `services/knowledge/README.md`):
+Two processes from one image (details and file layout: `services/agents/agent-knowledge-graph/README.md`):
 
 | Process | Code | Role |
 |---|---|---|
-| `ats-knowledge` | `ats_knowledge/api/` | MCP server: ingest (queue only), status, search, forget, cancel |
-| `ats-knowledge-worker` | `ats_knowledge/worker/` | Claims queued episodes, extracts them with Graphiti; scaled 0..N by KEDA |
-| shared | `ats_knowledge/shared/` | Ledger/queue, tenancy, graph store, graph guard, graph versions, ontology types |
-| contract | `ats_common/knowledge/`, `ats_common/mcp_client.py` | Wire models, ontology schema, `KNW-*` errors, typed client (MCP SDK 1.x and 2.x) |
-| ATS use | `orchestrator/knowledge/` | Talent guidance (versioned), when to ingest, the chat tool |
+| `agent-knowledge-graph` | `agent_knowledge_graph/api/` | MCP server: ingest (queue only), status, search, forget, cancel |
+| `agent-knowledge-graph-worker` | `agent_knowledge_graph/worker/` | Claims queued episodes, extracts them with Graphiti; scaled 0..N by KEDA |
+| shared | `agent_knowledge_graph/shared/` | Ledger/queue, tenancy, graph store, graph guard, graph versions, ontology types |
+| contract | `agent_common/knowledge/`, `agent_common/mcp_client.py` | Wire models, ontology schema, `KNW-*` errors, typed client (MCP SDK 1.x and 2.x) |
+| ATS use | `ats_orchestrator/knowledge/` | Talent guidance (versioned), when to ingest, the chat tool |
 
 ## 2. Flows
 
@@ -37,7 +37,7 @@ Two processes from one image (details and file layout: `services/knowledge/READM
    return the existing episode. A previously failed episode is re-queued with fresh attempts.
 3. Insert a ledger row with status `queued`; the text is kept for the worker.
 
-**Extract** (worker; pods scaled by KEDA on the backlog, see `deploy/k8s/keda/README.md`)
+**Extract** (worker; pods scaled by KEDA on the backlog, see `docs/keda_autoscaling.md`)
 1. Claim up to `WORKER_CONCURRENCY` due rows with `FOR UPDATE SKIP LOCKED` and lease them (`WORKER_LEASE_S`).
 2. Split the text into sections (`shared/sections.py`: headings, then packed up to `EPISODE_MAX_CHARS`, 4,000);
    sections after the first start with "(Part of resume document:N. The document begins: ...)" so every section
@@ -92,11 +92,12 @@ and are not stored in the graph.
 
 ## 4. Security
 
-* **Zero trust between services**: short-lived service JWT (`aud=ats-knowledge`, `kind=service`) on every
-  request, caller allow-list (`ALLOWED_CALLERS`), tool allow-list per caller (`TOOL_POLICY`). ClusterIP only;
+* **Zero trust between services**: short-lived service JWT from the auth-service (client_credentials,
+  `aud=agent-knowledge-graph`, `kind=service`, ES256, verified with the JWKS) on every request, caller allow-list (`ALLOWED_CALLERS`), tool allow-list per caller (`TOOL_POLICY`). ClusterIP only;
   a NetworkPolicy lets only the orchestrator reach the MCP port.
-* **Stores locked down**: FalkorDB and the cache Redis require passwords (from `ats-platform-secrets`); the
-  FalkorDB browser UI is off; NetworkPolicies allow only pods labelled `app.kubernetes.io/component=knowledge`.
+* **Stores locked down**: `falkordb` and `redis` (namespace `agent-infra`) require passwords (`agent-infra-secrets`;
+  the services read the same values from `agent-factory-secrets`); the FalkorDB browser UI is off; FalkorDB admits
+  only agent-factory pods labelled `app.kubernetes.io/component=knowledge-graph`, Redis only agent-factory pods.
 * **Prompt injection**: guidance and prompts tell the LLM to treat resume text, facts and questions as data. The
   answer step cannot add facts (citation check). Caller guidance can shape answers but cannot widen their source.
 * **PII minimisation**: raw text stays in Postgres only until extraction ends (then cleared); the screening
@@ -108,11 +109,11 @@ and are not stored in the graph.
   its FalkorDB graphs with `GRAPH.DELETE <graph_id>` (see Operations).
 * **Errors**: catalog codes only (`KNW-*`, `LLM-*`, `SYS-INT-0001`); no stack traces or internal hostnames
   cross the wire (the client hides transport details too).
-* **Why a separate Redis for the cache**: the shared Redis (namespace `amol`) is `redis:7.4-alpine`, which has no
-  vector search (the `FT.*` query engine RedisVL needs). FalkorDB runs on Redis 8 but ships only the graph and
-  `vectorset` modules, and a graph store must never evict data, while a cache should. So `ats-knowledge-redis`
-  (`redis:8.2-alpine`, 400 MB, LRU, no disk) holds only the cache and graph-version counters. If the shared Redis
-  moves to 8.x, point the knowledge `REDIS_URL` at it (database 0) and delete `knowledge-redis.yml`.
+* **One Redis for the cache**: the platform `redis` is Redis 8 (`redis:8.2-alpine`), which includes the query engine
+  (`FT.*`) RedisVL needs; the cache lives in database 0 (`REDIS_DB=0`, the query engine works only there) under the
+  `ats:{env}:knowledge:semcache` prefix. Redis runs with `maxmemory-policy volatile-lru`: cache entries carry a TTL
+  and may be evicted, the graph-version counters have none and are never evicted. FalkorDB stays separate: a graph
+  store must never evict data. The episode queue is the `knowledge_episodes` table in Postgres, not Redis.
 * **Supply chain**: images pinned (`falkordb/falkordb:v4.22.3`, `redis:8.2-alpine`); `uv.lock` committed.
 
 ## 5. Performance and limits
@@ -131,7 +132,7 @@ and are not stored in the graph.
 
 ## 6. Configuration
 
-All settings are env vars (see `services/knowledge/src/ats_knowledge/config.py` and `.env.example`). The ones
+All settings are env vars (see `services/agents/agent-knowledge-graph/src/agent_knowledge_graph/config.py` and `.env.example`). The ones
 you will tune:
 
 | Setting | Default | Notes |
@@ -146,16 +147,16 @@ you will tune:
 | `WORKER_CONCURRENCY` / `WORKER_LEASE_S` | 1 / 4200 | Lease must exceed the timeout; keep `targetQueryValue` in the ScaledObject equal to `WORKER_CONCURRENCY` |
 | KEDA `maxReplicaCount` | 1 | Raise with LLM capacity only |
 | `SEMANTIC_CACHE_DISTANCE` | 0.08 | Lower = stricter. Raise carefully: too loose returns answers to different questions |
-| `LLM_EMBEDDING_ID` / `LLM_EMBEDDING_DIM` (ats-llm-config) | nomic v1.5 / 768 | Changing the model means new vectors: drop the graphs and the cache index, then re-ingest |
-| Orchestrator `KNOWLEDGE_MCP_URL` | k8s: `http://ats-knowledge/mcp` | Empty turns the feature off |
+| `LLM_EMBEDDING_ID` / `LLM_EMBEDDING_DIM` (llm-config) | nomic v1.5 / 768 | Changing the model means new vectors: drop the graphs and the cache index, then re-ingest |
+| Orchestrator `KNOWLEDGE_MCP_URL` | k8s: `http://agent-knowledge-graph/mcp` | Empty turns the feature off |
 | Orchestrator `KNOWLEDGE_INGEST_SCREENINGS` | true | Store screening outcomes for matching |
 
 ## 7. Adding another caller service
 
-1. Depend on `ats-common[mcp]` and use `KnowledgeClient` with your service name as `caller`.
+1. Depend on `agent-common[mcp]` and use `KnowledgeClient` with your service name as `caller`.
 2. Knowledge ConfigMap: add the caller to `ALLOWED_CALLERS` and its tools to `TOOL_POLICY`
    (e.g. `ats-connectors=ingest_episode|get_episode|forget_source`).
-3. `deploy/k8s/base/knowledge/network-policy.yml`: add the caller's pod selector.
+3. `deploy/helm/agent-factory/values.yaml (services.agentKnowledgeGraph.networkPolicy.callers)`: add the caller's pod selector.
 4. Choose a namespace and guidance (and later an ontology), as in the ontology guide's checklist.
 
 ## 8. Operations
@@ -170,9 +171,9 @@ redis-cli -a "$FALKORDB_PASSWORD" GRAPH.QUERY talent__c1_p1 "MATCH (n:Entity) RE
 redis-cli -a "$FALKORDB_PASSWORD" GRAPH.DELETE talent__c1_p1
 ```
 
-Metrics (Grafana): `ats_knowledge_ingest_requests_total{outcome}`, `ats_knowledge_episodes_total{outcome}`,
-`ats_knowledge_extraction_duration_seconds`, `ats_knowledge_searches_total{cache}`,
-`ats_knowledge_search_duration_seconds`, `ats_knowledge_answers_total`. Log events: `knowledge.episode_*`,
+Metrics (Grafana): `agent_knowledge_ingest_requests_total{outcome}`, `agent_knowledge_episodes_total{outcome}`,
+`agent_knowledge_extraction_duration_seconds`, `agent_knowledge_searches_total{cache}`,
+`agent_knowledge_search_duration_seconds`, `agent_knowledge_answers_total`. Log events: `knowledge.episode_*`,
 `knowledge.cache_unavailable`, `knowledge.worker_*`.
 
 ## 9. Known limits

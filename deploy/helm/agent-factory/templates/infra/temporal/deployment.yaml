@@ -1,0 +1,143 @@
+{{- /* Temporal: the durable workflow engine (docs/impl_temporal.md).
+
+       Persistence is OUR Postgres, in two databases the schema job creates (temporal, temporal_visibility) -
+       no new datastore. Stateless, so a Deployment rather than a StatefulSet: all durable state is in Postgres.
+
+       Default OFF (infra.temporal.enabled). Services fall back to their non-durable path when
+       temporal_address is empty, so this can be switched on one service at a time.
+
+       The auto-setup image creates the schemas on first start; it is idempotent on later starts. Pin the
+       version: a Temporal upgrade can require a schema migration, which is a planned operation, never a
+       side effect of a redeploy. */ -}}
+{{- with .Values.infra.temporal }}
+{{- if .enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "temporal" "appName" "temporal") | nindent 2 }}
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: temporal
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "temporal") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: temporal
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 7233
+            - name: membership
+              containerPort: 6933
+          env:
+            - name: DB
+              value: "postgres12"
+            - name: DB_PORT
+              value: "5432"
+            - name: POSTGRES_SEEDS
+              value: {{ printf "postgres.%s.svc.cluster.local" $.Values.infra.namespace | quote }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-user
+            - name: POSTGRES_PWD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-password
+            - name: DBNAME
+              value: {{ .databaseName | quote }}
+            - name: VISIBILITY_DBNAME
+              value: {{ .visibilityDatabaseName | quote }}
+            - name: NUM_HISTORY_SHARDS
+              value: {{ .numHistoryShards | quote }}
+            # Namespaces the engine should have. Creating them here keeps a fresh cluster self-sufficient.
+            - name: DEFAULT_NAMESPACE
+              value: {{ .defaultNamespace | quote }}
+            - name: DEFAULT_NAMESPACE_RETENTION
+              value: {{ .defaultNamespaceRetention | quote }}
+            # The bundled web UI is served by its own container below, not by the server.
+            - name: SKIP_DEFAULT_NAMESPACE_CREATION
+              value: "false"
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.global.containerSecurityContext | nindent 12 }}
+{{- if .ui.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "temporal-ui" "appName" "temporal-ui") | nindent 2 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: temporal-ui
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "temporal-ui") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: temporal-ui
+          image: {{ .ui.image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: {{ printf "temporal.%s.svc.cluster.local:7233" $.Values.infra.namespace | quote }}
+            # Served under a sub-path on the shared host, like Grafana; must match the IngressRoute below.
+            - name: TEMPORAL_UI_PUBLIC_PATH
+              value: {{ .ui.basePath | quote }}
+            - name: TEMPORAL_CSRF_COOKIE_INSECURE
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .ui.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.global.containerSecurityContext | nindent 12 }}
+{{- end }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "temporal" "ports" (list (dict "name" "grpc" "port" 7233 "targetPort" "grpc"))) }}
+{{- if .ui.enabled }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "temporal-ui" "ports" (list (dict "name" "http" "port" 80 "targetPort" "http"))) }}
+{{- end }}
+{{- end }}
+{{- end }}

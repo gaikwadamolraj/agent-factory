@@ -1,0 +1,82 @@
+{{- /*
+  THE generic backend template. One block per HTTP backend lives in values (services: public-capable, agents:
+  internal); this template ranges over both and renders, for each enabled block, its Deployment (ats.serviceDeployment)
+  and - when it declares a `service` - its ClusterIP Service (ats.service), plus a NetworkPolicy (ats.networkPolicy)
+  and any PersistentVolumeClaims it declares. No per-service template file: add a service by adding a values block.
+
+  How values map to objects (see the comment at the top of values.yaml for the full block shape):
+    name            object/app name; default = kebab-case of the values key (atsUi -> ats-ui). Override with `name`.
+    service         present  => a ClusterIP Service is rendered (service.ports); absent => no Service (the worker).
+    envFrom         ConfigMaps mounted as env; each also becomes a checksum/* annotation so the pod rolls on change.
+    config          present  => its own ConfigMap <name>-config is rendered by config.yaml.
+    imageFrom       reuse another block's image (the worker reuses agent-knowledge-graph's image).
+    scaledByKeda    with keda.enabled, spec.replicas is omitted so KEDA owns it (the worker).
+    oauthClients    (auth-service) each caller also gets CLIENT_SECRET_<CALLER> from secrets.platform.
+    networkPolicy   ingress/egress rules (ats.networkPolicy); absent => no NetworkPolicy.
+    volumeClaims    PVCs kept on uninstall (the guardrail model cache).
+    route           handled by templates/routing/routes.yaml (a block with a route is reachable from outside).
+*/ -}}
+{{- $root := . -}}
+{{- $all := merge (deepCopy .Values.services) .Values.agents -}}
+{{- range $group := (list .Values.services .Values.agents) }}
+{{- range $key, $svc := $group }}
+{{- if $svc.enabled }}
+{{- $name := include "ats.serviceName" (dict "key" $key "values" $svc) }}
+{{- $image := $svc.image }}
+{{- if $svc.imageFrom }}
+{{- $image = (get $all $svc.imageFrom).image }}
+{{- end }}
+{{- /* auth-service: besides .env, every service client in .oauthClients gets CLIENT_SECRET_<CLIENT> from key
+       client-secret-<client> of secrets.platform (the same key the client reads as SERVICE_CLIENT_SECRET). */ -}}
+{{- $values := $svc }}
+{{- if $svc.oauthClients }}
+{{- $env := $svc.env | default list }}
+{{- range $client, $_ := $svc.oauthClients }}
+{{- $env = append $env (dict "name" (printf "CLIENT_SECRET_%s" ($client | upper | replace "-" "_")) "secretKeyRef" (dict "secret" "platform" "key" (printf "client-secret-%s" $client))) }}
+{{- end }}
+{{- $values = merge (dict "env" $env) (omit $svc "env") }}
+{{- end }}
+---
+{{ include "ats.serviceDeployment" (dict
+    "root" $root
+    "name" $name
+    "component" $svc.component
+    "values" $values
+    "image" $image
+    "replicas" (not (and $svc.scaledByKeda $root.Values.keda.enabled))
+    "envFrom" ($svc.envFrom | default list)
+    "checksumAnnotations" (include "ats.configChecksums" (dict "root" $root "all" $all "envFrom" ($svc.envFrom | default list)))) }}
+{{- with $svc.service }}
+---
+{{ include "ats.service" (dict "root" $root "name" $name "ports" .ports) }}
+{{- end }}
+{{- with $svc.networkPolicy }}
+---
+{{ include "ats.networkPolicy" (dict
+    "root" $root
+    "name" (.name | default (printf "%s-traffic" $name))
+    "appName" $name
+    "port" (.port | default (first $svc.ports).containerPort)
+    "ingress" (.ingress | default dict)
+    "egress" .egress) }}
+{{- end }}
+{{- range $svc.volumeClaims }}
+---
+{{- /* Kept on uninstall (helm.sh/resource-policy keep) so the cached data survives. */}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  {{- include "ats.metadata" (dict "root" $root "name" .name "appName" $name "annotations" (dict "helm.sh/resource-policy" "keep")) | nindent 2 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .size }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

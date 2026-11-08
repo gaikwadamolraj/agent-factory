@@ -1,0 +1,183 @@
+{
+  "key": "fit",
+  "version": "1",
+  "displayName": "Candidate fit",
+  "maxScore": 100,
+  "grades": {
+    "strong": {
+      "weight": 1.0,
+      "label": "Strong"
+    },
+    "moderate": {
+      "weight": 0.6,
+      "label": "Moderate"
+    },
+    "adjacent": {
+      "weight": 0.4,
+      "label": "Adjacent"
+    },
+    "claimed": {
+      "weight": 0.25,
+      "label": "Claimed only"
+    },
+    "invalidated": {
+      "weight": 0.0,
+      "label": "Invalidated"
+    },
+    "absent": {
+      "weight": 0.0,
+      "label": "Absent"
+    }
+  },
+  "positiveGrades": [
+    "strong",
+    "moderate",
+    "adjacent",
+    "claimed"
+  ],
+  "components": [
+    {
+      "kind": "graded",
+      "key": "must_have",
+      "points": 50,
+      "select": {
+        "attributes": {
+          "importance": [
+            "must"
+          ]
+        }
+      },
+      "fallbackToAll": true
+    },
+    {
+      "kind": "graded",
+      "key": "nice_to_have",
+      "points": 10,
+      "select": {
+        "attributes": {
+          "importance": [
+            "nice"
+          ]
+        }
+      },
+      "fallbackComponent": "must_have"
+    },
+    {
+      "kind": "input",
+      "key": "experience",
+      "points": 15,
+      "input": "experience_ratio",
+      "thresholds": [
+        {
+          "min": 1.0,
+          "points": 15
+        },
+        {
+          "min": 0.75,
+          "points": 10
+        },
+        {
+          "min": 0.5,
+          "points": 5
+        },
+        {
+          "min": 0.0,
+          "points": 0
+        }
+      ],
+      "fallbackInput": "seniority_fit"
+    },
+    {
+      "kind": "input",
+      "key": "responsibilities",
+      "points": 15,
+      "input": "responsibility_fit"
+    },
+    {
+      "kind": "input",
+      "key": "education",
+      "points": 10,
+      "input": "education_fit"
+    }
+  ],
+  "deductions": [
+    {
+      "key": "manipulation",
+      "points": 15,
+      "flag": "manipulation"
+    },
+    {
+      "key": "mostly_claimed",
+      "points": 5,
+      "majorityGrade": "claimed",
+      "among": [
+        "strong",
+        "moderate",
+        "claimed"
+      ]
+    }
+  ],
+  "caps": [
+    {
+      "key": "half_musts_missing",
+      "maxScore": 40,
+      "grades": [
+        "absent",
+        "invalidated"
+      ],
+      "minFraction": 0.5,
+      "select": {
+        "attributes": {
+          "importance": [
+            "must"
+          ]
+        }
+      },
+      "reason": "half or more of the must-have requirements are absent"
+    },
+    {
+      "key": "core_missing",
+      "maxScore": 55,
+      "grades": [
+        "absent",
+        "invalidated"
+      ],
+      "select": {
+        "attributes": {
+          "core": [
+            "true"
+          ]
+        }
+      },
+      "reason": "core requirement missing: {names}"
+    }
+  ],
+  "bands": [
+    {
+      "min": 90,
+      "band": "Exceptional",
+      "recommendation": "Shortlist"
+    },
+    {
+      "min": 75,
+      "band": "Strong",
+      "recommendation": "Shortlist"
+    },
+    {
+      "min": 60,
+      "band": "Partial",
+      "recommendation": "Interview to verify gaps"
+    },
+    {
+      "min": 40,
+      "band": "Weak",
+      "recommendation": "Do not proceed"
+    },
+    {
+      "min": 0,
+      "band": "Not suited",
+      "recommendation": "Do not proceed"
+    }
+  ],
+  "emptyCriteriaReason": "No requirements could be read from the JD."
+}

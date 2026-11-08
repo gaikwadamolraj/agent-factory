@@ -1,0 +1,7 @@
+mcp>=1.6.0
+strands-agents[litellm]>=0.1.0
+sqlalchemy>=2.0.30
+pydantic>=2.7.0
+openai>=1.50.0
+python-dotenv>=1.0.1
+uvicorn>=0.30.0

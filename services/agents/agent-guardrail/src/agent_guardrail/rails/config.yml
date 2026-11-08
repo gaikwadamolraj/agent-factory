@@ -1,0 +1,8 @@
+# NeMo Guardrails configuration of the guardrails agent: input rails only, no LLM call per check.
+# The flow calls the `check_untrusted_text` action (pattern checks + injection classifier, see engine.py).
+# Add a rail: write its flow in a .co file here and list it under rails.input.flows.
+models: []
+rails:
+  input:
+    flows:
+      - check untrusted text

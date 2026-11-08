@@ -1,0 +1,113 @@
+{{- /* Traefik middlewares of the gateway, created in the infra namespace next to the IngressRoutes
+       (referenced as <infra-namespace>-<name>@kubernetescrd). Names start with "ats-" so they never clash with
+       middlewares created by hand on the shared host. No buffering middleware: it also buffers responses and would
+       break the streamed (SSE) chat answers. Upload size is enforced by the UI proxy and the orchestrator. */ -}}
+{{- with .Values.infra.routing }}
+{{- if .middlewares.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "security-headers" "namespace" $.Values.infra.namespace) | nindent 2 }}
+spec:
+  headers:
+    contentTypeNosniff: true
+    frameDeny: true
+    browserXssFilter: true
+    referrerPolicy: {{ .middlewares.referrerPolicy }}
+    contentSecurityPolicy: {{ .middlewares.contentSecurityPolicy | quote }}
+{{- range $name, $limit := .middlewares.rateLimits }}
+---
+{{- /* Rate limit per client IP (ipStrategy depth: proxies in front of Traefik). */}}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" $name "namespace" $.Values.infra.namespace) | nindent 2 }}
+spec:
+  rateLimit:
+    average: {{ $limit.average }}
+    burst: {{ $limit.burst }}
+    period: {{ $limit.period }}
+    sourceCriterion:
+      ipStrategy:
+        depth: {{ $.Values.infra.routing.middlewares.ipStrategyDepth }}
+{{- end }}
+{{- /* Web Application Firewall (OWASP CRS via the Coraza WASM plugin). Plugin name "coraza" must match the one
+       declared in Traefik's static config (deploy/review/amol-host/traefik-gateway-config.yaml). */}}
+{{- if .waf.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "waf" "namespace" $.Values.infra.namespace) | nindent 2 }}
+spec:
+  plugin:
+    coraza:
+      directives:
+        {{- toYaml .waf.directives | nindent 8 }}
+{{- end }}
+{{- /* Bot / AI-scraper defense (Bot Wrangler plugin). Plugin name "botwrangler" must match Traefik static config.
+       Verify the exact config keys against the plugin version you pin (review file). */}}
+{{- if .botDefense.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "bot-defense" "namespace" $.Values.infra.namespace) | nindent 2 }}
+spec:
+  plugin:
+    botwrangler:
+      action: {{ .botDefense.action | quote }}
+{{- end }}
+{{- /* Behavioural IPS: CrowdSec bouncer plugin. Plugin name "crowdsec" must match Traefik static config. Needs a
+       running CrowdSec LAPI + log agent (docs/gateway_security.md) and a bouncer API key; this middleware only asks
+       the LAPI whether the client IP is banned. */}}
+{{- if .crowdsec.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "crowdsec" "namespace" $.Values.infra.namespace) | nindent 2 }}
+spec:
+  plugin:
+    crowdsec:
+      enabled: "true"
+      crowdsecMode: "live"
+      crowdsecLapiScheme: {{ (urlParse .crowdsec.lapiUrl).scheme | quote }}
+      crowdsecLapiHost: {{ (urlParse .crowdsec.lapiUrl).host | quote }}
+      {{- if .crowdsec.apiKeyFile }}
+      # The bouncer API key is read by the plugin from this file inside the Traefik pod (kube-system mounts the
+      # crowdsec-bouncer Secret here - see deploy/review/amol-host/traefik-gateway-config.yaml). The key itself is
+      # NEVER rendered into this manifest (CLAUDE.md: no secrets in manifests).
+      crowdsecLapiKeyFile: {{ .crowdsec.apiKeyFile | quote }}
+      {{- else }}
+      # apiKeyFile is empty: supply the key by patching this Middleware's plugin.crowdsec.crowdsecLapiKey yourself
+      # (NOT rendered here - never put a key in a manifest; see docs/gateway_security.md).
+      {{- end }}
+{{- end }}
+{{- /* Admin console: IP allow-list - only these source ranges may reach /agent-factory. */}}
+{{- if .adminProtection.ipAllowList.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "admin-ip-allowlist" "namespace" $.Values.infra.namespace) | nindent 2 }}
+spec:
+  ipAllowList:
+    sourceRange:
+      {{- toYaml .adminProtection.ipAllowList.allowedCIDRs | nindent 6 }}
+    ipStrategy:
+      depth: {{ .middlewares.ipStrategyDepth }}
+{{- end }}
+{{- /* Admin console: a basic-auth wall in front of the console (htpasswd Secret in the infra namespace). */}}
+{{- if .adminProtection.basicAuth.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "admin-basic-auth" "namespace" $.Values.infra.namespace) | nindent 2 }}
+spec:
+  basicAuth:
+    secret: {{ .adminProtection.basicAuth.secret }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,16 @@
+{{- /* Both namespaces of the release: the app namespace (the release namespace, agent-factory) and the shared
+       infrastructure namespace (infra.namespace, agent-infra). helm.sh/resource-policy keep: `helm uninstall`
+       never deletes them, so the Secrets inside survive. `./deploy.sh init` creates them with the same labels
+       before the first install (Secrets must exist first); Helm then adopts them (--take-ownership). */ -}}
+{{- range $name := list .Release.Namespace .Values.infra.namespace }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/part-of: {{ $name }}
+    {{- include "ats.chartLabels" $ | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+{{- end }}

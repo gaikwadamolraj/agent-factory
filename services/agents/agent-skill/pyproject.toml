@@ -1,0 +1,22 @@
+[project]
+name = "agent-skill"
+version = "0.2.0"
+description = "ATS screening agent: AWS Strands on LM Studio, exposed as an MCP server, per-user/project memory"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "agent-common[llm]",
+    "strands-agents[openai]>=1.60.0",
+    "mcp>=2.0.0",
+    "uvicorn>=0.30.0",
+]
+
+[tool.uv.sources]
+agent-common = { path = "../../common", editable = false }
+
+[dependency-groups]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"

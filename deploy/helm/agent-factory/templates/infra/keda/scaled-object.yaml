@@ -1,0 +1,39 @@
+{{- /* KEDA autoscaling of the queue-driven workers, one ScaledObject per enabled keda.scaledObjects block.
+         replicas = ceil(backlog / targetQueryValue), between minReplicaCount and maxReplicaCount; 0 when idle.
+         Each block's `target` names the Deployment, which must set scaledByKeda so it omits spec.replicas and
+         deploys never fight KEDA. Requires the KEDA operator (cluster add-on, not part of this chart; see
+         README.md). Add a worker by copying a values block - no new template. */ -}}
+{{- $root := . -}}
+{{- with .Values.keda }}
+{{- if .enabled }}
+{{- $postgres := .postgres }}
+{{- range $name, $scaled := .scaledObjects }}
+{{- if $scaled.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $scaled.target }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "ats.chartLabels" $root | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ $scaled.target }}
+  minReplicaCount: {{ $scaled.minReplicaCount }}
+  maxReplicaCount: {{ $scaled.maxReplicaCount }}
+  pollingInterval: {{ $scaled.pollingInterval }}
+  cooldownPeriod: {{ $scaled.cooldownPeriod }}
+  triggers:
+    - type: postgresql
+      metadata:
+        # Connection string comes from the TriggerAuthentication (the shared database-url); only the query here.
+        query: {{ $scaled.query | quote }}
+        targetQueryValue: {{ $scaled.targetQueryValue | toString | quote }}
+        activationTargetQueryValue: {{ $scaled.activationTargetQueryValue | toString | quote }}
+      authenticationRef:
+        name: keda-postgres
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

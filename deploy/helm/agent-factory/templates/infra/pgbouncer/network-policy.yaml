@@ -1,0 +1,11 @@
+{{- /* Only pods of the release namespace (the ATS services) may connect to PgBouncer. PgBouncer -> Postgres is
+       same-namespace (agent-infra), already admitted by the postgres-clients policy (extraClientNamespaces). */ -}}
+{{- if .Values.infra.pgbouncer.enabled }}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "pgbouncer-clients"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "pgbouncer"
+    "port" .Values.infra.pgbouncer.listenPort) }}
+{{- end }}

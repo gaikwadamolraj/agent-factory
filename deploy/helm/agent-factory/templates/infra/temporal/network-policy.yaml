@@ -1,0 +1,28 @@
+{{- /* Temporal history holds run arguments and results for every tenant, so only the services that actually
+       run workflows or workers may reach the engine - not every pod in the release namespace.
+
+       Keep `infra.temporal.callers` in step with the services whose settings carry a temporal_address: a
+       service that cannot reach the engine fails its first start with a 503 rather than anything subtler. */ -}}
+{{- if .Values.infra.temporal.enabled }}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "temporal-clients"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "temporal"
+    "callers" .Values.infra.temporal.callers
+    "port" 7233) }}
+{{- if .Values.infra.temporal.ui.enabled }}
+---
+{{- /* The UI is reached only through the gateway (an admin route), never directly by application pods. */}}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "temporal-ui-clients"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "temporal-ui"
+    "extraNamespaces" (list "kube-system")
+    "callers" (list)
+    "port" 8080) }}
+{{- end }}
+{{- end }}

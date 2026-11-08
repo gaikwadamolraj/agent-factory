@@ -1,0 +1,26 @@
+[project]
+name = "ats-orchestrator"
+version = "0.2.0"
+description = "ATS orchestrator: FastAPI /api/v1 + LangGraph conversational assistant; screening agent over MCP"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "agent-common[fastapi,mcp,llm,temporal]",
+    "uvicorn>=0.30.0",
+    # 2.x pulls onnxruntime + networkx (~80 MB) for layout features we do not use
+    "langchain-openai>=0.3.0",
+    "langgraph>=0.4.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "pypdfium2>=5.15.1",
+    "opentelemetry-instrumentation-sqlalchemy>=0.66b2",
+]
+
+[tool.uv.sources]
+agent-common = { path = "../../common", editable = false }
+
+[dependency-groups]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "httpx>=0.27.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,7 +1,7 @@
 # Local LLM (LM Studio)
 
 > Services no longer call LM Studio directly: they go through the LLM gateway, which routes to LM Studio and the
-> vLLM host by alias. Model names and addresses live in `deploy/k8s/base/llm-gateway/litellm-config.yaml`
+> vLLM host by alias. Model names and addresses live in `deploy/helm/agent-factory/files/litellm-config.yaml`
 > (see [llm_gateway.md](llm_gateway.md)). This page is about running LM Studio itself.
 
 LM Studio serves `qwen2.5-14b-instruct-1m` and the embedding model on the host (`http://host.docker.internal:1235/v1`).
@@ -13,7 +13,35 @@ LM Studio serves `qwen2.5-14b-instruct-1m` and the embedding model on the host (
 
 Previous model: `meta-llama-3.1-8b-instruct` (keep it downloaded until Qwen has been verified, see the revert plan below).
 
-## 0. Faster models on this machine (GPU + mixture-of-experts) - in progress
+## 0. Faster models on this machine (GPU + mixture-of-experts)
+
+**Current setup (2026-11-05): Qwen3-30B-A3B-Instruct-2507** in LM Studio replaces qwen2.5-14b behind the gateway
+(backend `qwen3_30b`; `LLM_CONFIG_VERSION=2`).
+
+| Model | Score | Tokens/s | First token |
+|---|---|---|---|
+| **qwen3-30b-a3b-instruct-2507** (LM Studio, Vulkan) | 15/18 | **24.7** | 4.1 s |
+| qwen2.5-14b-instruct-1m (old) | 10/12 | 6.0 | 9.7 s |
+| qwen3-4b (vLLM-MLX on the Mac, fast pool) | 15/18 | 62 | 1.8 s |
+
+### After every reboot (start here)
+```bash
+lms server start --bind 0.0.0.0 --port 1235     # 0.0.0.0, not the default localhost: the cluster must reach it
+lms load qwen3-30b-a3b-instruct-2507 --gpu max -c 65536 --parallel 4 --ttl 86400 -y
+lms load text-embedding-nomic-embed-text-v1.5@q8_0 --ttl 86400 -y
+lms ps                                          # exactly these two; CONTEXT 65536 / PARALLEL 4 / TTL 24h
+```
+Pitfalls seen on 2026-11-05:
+* Server on localhost only: every LLM call from the cluster fails with `Connection error` (extraction, screening,
+  embeddings all at once). Check from the cluster:
+  `kubectl -n agent-infra exec deploy/llm-gateway -- python3 -c "import urllib.request;print(urllib.request.urlopen('http://172.21.208.1:1235/v1/models').status)"`.
+* A model not loaded explicitly is auto-loaded on the first request with **defaults** (8k context, 1 h TTL), which
+  is too small for 4 parallel requests. Load explicitly as above.
+* Duplicates (`...@q8_0:2`) and old models (qwen2.5-14b) can get auto-loaded by stray requests: `lms ps`, then
+  `lms unload <identifier>`.
+* GPU memory: the model ran from GPU **shared** memory (Variable Graphics Memory still at its default); on this
+  integrated GPU that is the same RAM and speed was fine (24.7 tok/s).
+* Per request at most ~12k input tokens now (16k per slot minus 4k output; was 61k on the 14B).
 
 **Machine:** AMD Ryzen AI 9 HX 370, Radeon 890M (integrated GPU, shared memory), 61.6 GB RAM, no NVIDIA GPU.
 LM Studio runs llama.cpp on **Vulkan**, so the 890M can run models.
@@ -67,14 +95,15 @@ uv run --no-project --with openai python scripts/llm_benchmark.py --base-url htt
 Cases: answers from excerpts (name, location, current employer), choosing a tool instead of guessing, JSON-schema
 roles, ontology-style extraction; plus time to first token and tokens/s.
 
-Baseline measured 2026-11-04: **qwen3-4b** (vLLM-MLX, Mac): 15/18, 62 tokens/s, 1.8 s to first token; its one miss is
-extraction (takes the headline instead of the current job title). qwen2.5-14b: see `bench_*.json` once run.
+Results are in the table at the top of this section. Every model misses the same extraction case (it takes the
+resume headline as the current job title). `gpt-oss-safeguard-20b` (downloaded by mistake for `gpt-oss-20b`) is a
+safety classifier, not a chat model: keep it for the guardrail work, not the chat benchmark.
 
 ### 0.4 Switch the gateway to the winner
-In `deploy/k8s/base/llm-gateway/litellm-config.yaml`: change the `qwen25_14b` backend's `model:` to
+In `deploy/helm/agent-factory/files/litellm-config.yaml`: change the `qwen25_14b` backend's `model:` to
 `openai/<winner key>` (rename the anchor if you like), set `max_input_tokens` (context per slot - 4096) and
-`max_parallel_requests`, bump `LLM_CONFIG_VERSION` in `deploy/k8s/base/llm-config/kustomization.yml`, then
-`./deploy.sh orchestrator`. Services keep using the same aliases.
+`max_parallel_requests`, bump `LLM_CONFIG_VERSION` in `deploy/helm/agent-factory/values.yaml (infra.llmConfig)`, then
+`./deploy.sh apply` (no image builds; ~30 s). Services keep using the same aliases.
 
 ## 1. Start
 
@@ -120,7 +149,7 @@ docker compose logs -f agent    # look for agent.screening_completed, not agent.
 Cached analyses are keyed by model name, so switching models never serves old Llama results.
 
 **Kubernetes:** model changes are made in the gateway config; its ConfigMaps are generated with a content hash, so a
-deploy rolls the gateway (and, for `ats-llm-config`, every LLM user) automatically.
+deploy rolls the gateway (and, for `llm-config`, every LLM user) automatically.
 A pod still asking for the old model makes LM Studio auto-load it next to Qwen (seen: Llama loaded with a 131k
 context). Memory then runs out, Qwen slows to about 2 tokens/s and requests fail with HTTP 500. `lms ps` shows
 what is loaded; unload anything that should not be there.
@@ -147,11 +176,11 @@ Revert if Qwen still fails after step 3, or if screenings regularly produce `age
    lms load meta-llama-3.1-8b-instruct --parallel 5 -c 65536 --ttl 86400 -y
    lms ps
    ```
-2. Point the backend at the old model, in one file: `deploy/k8s/base/llm-gateway/litellm-config.yaml`,
+2. Point the backend at the old model, in one file: `deploy/helm/agent-factory/files/litellm-config.yaml`,
    backend `qwen25_14b` -> `model: openai/meta-llama-3.1-8b-instruct` (and `max_input_tokens` to its context).
-   Bump `LLM_CONFIG_VERSION` in `deploy/k8s/base/llm-config/kustomization.yml` so cached results of the old model
+   Bump `LLM_CONFIG_VERSION` in `deploy/helm/agent-factory/values.yaml (infra.llmConfig)` so cached results of the old model
    are not reused.
-3. Apply: Kubernetes `./deploy.sh orchestrator` (the gateway and LLM users roll automatically);
+3. Apply: Kubernetes `./deploy.sh apply` (the gateway and LLM users roll automatically);
    Docker Compose `docker compose restart llm-gateway`.
 
 No service code or service config changes: services only know aliases. Extraction needs reliable structured output;

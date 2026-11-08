@@ -1,0 +1,12 @@
+{{- /* Only the ATS services that use LLMs (infra.llmGateway.callers, pods of the release namespace) may call the
+       gateway. */ -}}
+{{- if .Values.infra.llmGateway.enabled }}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "llm-gateway-callers"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "llm-gateway"
+    "callers" .Values.infra.llmGateway.callers
+    "port" 4000) }}
+{{- end }}

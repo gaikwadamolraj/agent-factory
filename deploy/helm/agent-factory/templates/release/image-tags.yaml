@@ -1,0 +1,13 @@
+{{- /* image-tags: the image tag of every ATS component in this release (values key -> tag).
+       deploy.sh reads it to keep the running tag of components it does not rebuild. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  {{- include "ats.metadata" (dict "root" $ "name" "image-tags") | nindent 2 }}
+data:
+  schema: {{ include "ats.imageTag" (dict "root" $ "image" .Values.schema.image) | quote }}
+  {{- range $key, $service := (merge (deepCopy .Values.services) .Values.agents) }}
+  {{- if $service.image }}
+  {{ $key }}: {{ include "ats.imageTag" (dict "root" $ "image" $service.image) | quote }}
+  {{- end }}
+  {{- end }}

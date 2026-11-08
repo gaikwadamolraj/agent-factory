@@ -13,6 +13,9 @@
 docs/
 **/impl_*.md
 deploy/
+# Domain packs are authoring content: they are published into the registry as skill-version files, never
+# baked into a runtime image (docs/impl_multi_domain.md section 6).
+packs/
 *.log
 *.pdf
 .vscode/

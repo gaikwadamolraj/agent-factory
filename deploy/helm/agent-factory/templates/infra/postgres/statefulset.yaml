@@ -1,0 +1,85 @@
+{{- /* PostgreSQL 16 with pgvector: the platform database (StatefulSet + PVC, Service "postgres").
+       Credentials from secrets.infra (postgres-user, postgres-password, postgres-db). PGDATA is a subfolder of the
+       volume, so a fresh volume's lost+found folder never blocks initdb. Apps reach it by FQDN
+       (postgres.<infra-namespace>.svc.cluster.local), set in the database-url Secret. */ -}}
+{{- with .Values.infra.postgres }}
+{{- if .enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "postgres" "appName" "postgres") | nindent 2 }}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "postgres") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .podSecurityContext | nindent 8 }}
+      containers:
+        - name: postgres
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-db
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # pg_isready only checks that the server accepts connections (no password needed)
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .storage }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "postgres" "ports" (list (dict "name" "postgres" "port" 5432 "targetPort" "postgres"))) }}
+{{- end }}
+{{- end }}

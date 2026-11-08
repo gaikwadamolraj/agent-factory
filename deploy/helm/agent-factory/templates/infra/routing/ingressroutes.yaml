@@ -1,0 +1,71 @@
+{{- /*
+  Expose nothing by default. A backend (services or agents) is reachable from outside ONLY if its values block
+  declares a `route` with `enabled: true`; everything else gets no ingress (the UI proxies to the internal
+  services). This template ranges over both maps and emits one Traefik IngressRoute per exposed backend.
+
+  route block:
+    enabled       false => not exposed (the default in values.yaml; dev turns on the UI).
+    entryPoints   Traefik entry points (e.g. web, websecure).
+    service/port  backend of the rules (default: this service, port "http").
+    rules         list of { match, priority?, middlewares? }:
+                    match        a Traefik rule; goes through tpl, so it may use {{ .Values.infra.routing.host }} etc.
+                    priority     higher wins (the stricter auth / chat-turn limits sit above the catch-all route).
+                    middlewares  names of Middlewares in this namespace (templates/routing/middlewares.yaml).
+
+  Grafana (/grafana) is exposed by its own IngressRoute (templates/infra/lgtm/route.yaml), already in this namespace.
+
+  The gateway (these IngressRoutes + templates/infra/routing/middlewares.yaml) lives in the INFRA namespace, so all
+  external routing is in one place. The backends (ats-ui, admin-ui, ...) run in the release namespace, so each
+  service reference names that namespace explicitly. That cross-namespace reference requires Traefik to be started
+  with `--providers.kubernetescrd.allowCrossNamespace=true` (see deploy/review/amol-host/README.md); the middlewares
+  are in this same (infra) namespace.
+*/ -}}
+{{- $root := . -}}
+{{- range $group := (list .Values.services .Values.agents) }}
+{{- range $key, $svc := $group }}
+{{- if and $svc.enabled $svc.route $svc.route.enabled }}
+{{- $name := include "ats.serviceName" (dict "key" $key "values" $svc) }}
+{{- $route := $svc.route }}
+{{- $routing := $root.Values.infra.routing }}
+{{- /* Middlewares applied before each rule's own list: the WAF on every exposed route (so the proxied chat API is
+       covered too), and - for an admin route - the IP allow-list, basic-auth wall and the tight admin rate limit. */}}
+{{- $prefix := list }}
+{{- if $routing.crowdsec.enabled }}{{ $prefix = append $prefix "crowdsec" }}{{ end }}
+{{- if $routing.botDefense.enabled }}{{ $prefix = append $prefix "bot-defense" }}{{ end }}
+{{- if $routing.waf.enabled }}{{ $prefix = append $prefix "waf" }}{{ end }}
+{{- if $route.admin }}
+{{-   if $routing.adminProtection.ipAllowList.enabled }}{{ $prefix = append $prefix "admin-ip-allowlist" }}{{ end }}
+{{-   if $routing.adminProtection.basicAuth.enabled }}{{ $prefix = append $prefix "admin-basic-auth" }}{{ end }}
+{{-   $prefix = append $prefix "rate-limit-admin" }}
+{{- end }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  {{- include "ats.metadata" (dict "root" $root "name" (printf "%s-route" $name) "appName" $name "namespace" $root.Values.infra.namespace) | nindent 2 }}
+spec:
+  entryPoints:
+    {{- toYaml $route.entryPoints | nindent 4 }}
+  routes:
+    {{- range $route.rules }}
+    {{- $mw := concat $prefix (.middlewares | default (list)) }}
+    - match: {{ tpl .match $root | quote }}
+      kind: Rule
+      {{- with .priority }}
+      priority: {{ . }}
+      {{- end }}
+      {{- with $mw }}
+      middlewares:
+        {{- range . }}
+        - name: {{ . }}
+          namespace: {{ $root.Values.infra.namespace }}
+        {{- end }}
+      {{- end }}
+      services:
+        - name: {{ $route.service | default $name }}
+          namespace: {{ $root.Release.Namespace }}
+          port: {{ $route.port | default "http" }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

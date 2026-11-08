@@ -18,6 +18,7 @@
 node_modules/
 .next/
 next-env.d.ts.bak
+*.tsbuildinfo
 
 # Editors / OS
 .vscode/
@@ -31,3 +32,6 @@ Thumbs.db
 
 # Claude Code personal overrides (the shared .claude/settings.json is committed)
 .claude/settings.local.json
+
+# Cutover backups (deploy.sh migrate-to-helm): cluster YAML, kept locally only
+backups/

@@ -1,6 +1,6 @@
 # Knowledge graph basics
 
-A short primer for anyone working on or with the shared **knowledge service** (`services/knowledge`).
+A short primer for anyone working on or with the shared **knowledge service** (`services/agents/agent-knowledge-graph`).
 How we built it: [impl_knowledge_graph.md](impl_knowledge_graph.md). How to describe your data:
 [knowledge_ontology_guide.md](knowledge_ontology_guide.md).
 

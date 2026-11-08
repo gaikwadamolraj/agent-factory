@@ -119,8 +119,8 @@ ORDER BY 1, 2, 4;
    hashes:
 
    ```bash
-   cd services/orchestrator
-   uv run python -c "from ats_common.security import hash_password; print(hash_password('<password>'))"
+   cd services/platform/auth-service
+   uv run python -c "from auth_service.passwords import hash_password; print(hash_password('<password>'))"
    ```
 
 3. Create the first admin and give them all of the client's projects:
@@ -147,22 +147,22 @@ projects and clients are refused by the membership check.
 
 Grafana (`/grafana`) requires a sign-in. Anonymous access is off.
 
-| login (from `ats-platform-secrets`) | Grafana role | can |
+| login (from `agent-infra-secrets`) | Grafana role | can |
 |---|---|---|
 | `grafana-admin-user` / `grafana-admin-password` | Admin | view and edit dashboards, manage Grafana users and data sources |
 | `grafana-viewer-user` / `grafana-viewer-password` | Viewer | view dashboards, logs and traces only |
 
 Both accounts are created from the secret every time the Grafana pod starts. To change a password, update the
-secret and run `kubectl -n ats-platform rollout restart deployment/ats-lgtm`. The **ATS Platform Overview**
+secret and run `kubectl -n agent-infra rollout restart deployment/lgtm`. The **ATS Platform Overview**
 dashboard (folder **ATS**) is loaded automatically from
-`deploy/k8s/base/observability/dashboards/ats-platform.json`. Edits made in the Grafana UI are lost on restart,
+`deploy/helm/agent-factory/files/dashboards/agent-factory.json`. Edits made in the Grafana UI are lost on restart,
 so export them into that file to keep them.
 
 These Grafana logins are separate from the ATS app users.
 
 ## Screening skills (per industry)
 
-There is one skill: `ats_screening` version `v1` (`services/agent/src/ats_agent/skills/ats_screening`). It isn't
+There is one skill: `ats_screening` version `v1` (`services/agents/agent-skill/src/agent_skill/skills/ats_screening`). It isn't
 tied to any industry: it reads the job description to decide what matters (for example GMP, validation, clinical
 trials or regulatory work for pharma) and scores the resume against that. Pharma roles therefore work today,
 judged on what the pharma JD asks for.

@@ -1,0 +1,7 @@
+{{- /* llm-config (release namespace): the LLM settings every LLM-using service reads (agent_common.llm): gateway
+       URL (llm-gateway in the infra namespace), alias per purpose, profiles, per-client policy, LLM_CONFIG_VERSION.
+       Stable name; agent-skill, ats-orchestrator and agent-knowledge-graph(-worker) carry a
+       checksum/llm-config annotation, so any change here rolls them. */ -}}
+{{- if .Values.infra.llmConfig.enabled }}
+{{ include "ats.configMap" (dict "root" $ "name" "llm-config" "data" .Values.infra.llmConfig.data) }}
+{{- end }}

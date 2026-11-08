@@ -1,0 +1,91 @@
+{{- /* Redis 8: the one Redis of the platform (sessions, authz versions, lockout counters, caches, the knowledge
+       graph's semantic cache with vector search in database 0); StatefulSet + PVC, Service "redis", AOF on,
+       maxmemory with policy volatile-lru (only keys with a TTL are evicted; see values infra.redis).
+       Password from secrets.infra (redis-password), set as an ACL rule for the default user.
+       Apps reach it by FQDN (redis.<infra-namespace>.svc.cluster.local), set in the redis-url Secret. */ -}}
+{{- with .Values.infra.redis }}
+{{- if .enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "redis" "appName" "redis") | nindent 2 }}
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "redis") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .podSecurityContext | nindent 8 }}
+      containers:
+        - name: redis
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          # default user: enabled, password from the Secret, all keys, all commands
+          command:
+            - redis-server
+            - --user
+            - default
+            - "on"
+            - ">$(REDIS_PASSWORD)"
+            - "~*"
+            - "+@all"
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - {{ .maxMemory | quote }}
+            - --maxmemory-policy
+            - {{ .maxMemoryPolicy }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: redis-password
+          ports:
+            - name: redis
+              containerPort: 6379
+          # REDISCLI_AUTH keeps the password off the command line
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.global.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .storage }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "redis" "ports" (list (dict "name" "redis" "port" 6379 "targetPort" "redis"))) }}
+{{- end }}
+{{- end }}

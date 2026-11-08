@@ -1,0 +1,11 @@
+apiVersion: v2
+name: agent-factory
+description: >-
+  ATS platform (orchestrator, agents, knowledge graph, frontend) with its shared infrastructure
+  (LLM gateway, knowledge stores, observability, routing, KEDA scaling) in one release.
+type: application
+# Chart version: bump on every chart change.
+version: 0.1.0
+# Default image tag of the ats-* services when neither global.image.tag nor a per-service tag is set.
+appVersion: "0.2.0"
+kubeVersion: ">=1.27.0-0"

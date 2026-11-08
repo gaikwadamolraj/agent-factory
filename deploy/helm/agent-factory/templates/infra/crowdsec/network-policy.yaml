@@ -1,0 +1,14 @@
+{{- /* CrowdSec LAPI: admit the bouncer (Traefik, in kube-system via infra.crowdsec.extraClientNamespaces) on the
+       LAPI port. The agent talks to the LAPI over the pod loopback (same pod), which NetworkPolicy does not gate, so
+       no rule is needed for it. Egress is left open (like the other infra components) - the agent needs it for the
+       hub collection download and, if disableOnlineApi=false, the Central API. */ -}}
+{{- if .Values.infra.crowdsec.enabled }}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "crowdsec-clients"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "crowdsec"
+    "port" (.Values.infra.crowdsec.lapiPort | int)
+    "extraNamespaces" .Values.infra.crowdsec.extraClientNamespaces) }}
+{{- end }}

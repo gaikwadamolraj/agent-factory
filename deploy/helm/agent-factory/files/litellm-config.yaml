@@ -1,0 +1,128 @@
+# LLM gateway (LiteLLM proxy) - THE place where models are configured. Services only know aliases
+# (ats-chat, ats-screening, ats-extraction, ats-answer, ats-embedding and the *-quality variants).
+#
+# Add or swap a model: add a backend under `x-backends`, reference it from the aliases below, deploy.
+# Backend addresses and keys come from env (ConfigMap llm-gateway-backends, Secret agent-infra-secrets), so this
+# file is the same for Docker Compose and Kubernetes.
+#
+# Routing: several backends under one alias share the load by capacity ("least-busy": the backend with the fewest
+# requests in flight, capped by max_parallel_requests). Pre-call checks skip backends whose context window is too
+# small for the request. A failing backend is cooled down and the request retried on another one; `fallbacks`
+# move to another alias when all backends of an alias fail.
+
+x-backends:
+  qwen3_30b: &qwen3_30b                        # LM Studio, Qwen3-30B-A3B MoE on the Radeon 890M (Vulkan): ~25 tok/s,
+    model: openai/qwen3-30b-a3b-instruct-2507  # 4x the old qwen2.5-14b; benchmark 15/18 (docs/local_llm.md)
+    api_base: os.environ/LMSTUDIO_API_BASE
+    api_key: os.environ/LMSTUDIO_API_KEY
+    max_parallel_requests: 4                   # = LM Studio --parallel
+    timeout: 900
+  qwen3_4b: &qwen3_4b                          # vLLM (MLX) on 192.168.0.120 (8k context, ~3x faster)
+    model: openai/qwen3-4b
+    api_base: os.environ/VLLM_QWEN3_4B_API_BASE
+    api_key: os.environ/VLLM_QWEN3_4B_API_KEY
+    max_parallel_requests: 4
+    timeout: 600
+  nomic_embed: &nomic_embed                    # embeddings: ONE model for the whole platform (vectors must match)
+    model: openai/text-embedding-nomic-embed-text-v1.5@q8_0
+    api_base: os.environ/LMSTUDIO_API_BASE
+    api_key: os.environ/LMSTUDIO_API_KEY
+    timeout: 120
+  # Hosted example (uncomment, add the key to the Secret, reference it from an alias):
+  # claude_haiku: &claude_haiku
+  #   model: anthropic/claude-haiku-5-5
+  #   api_key: os.environ/ANTHROPIC_API_KEY
+
+# max_input_tokens = context window - output budget (LLM_MAX_OUTPUT_TOKENS, 4096): the router only checks the prompt,
+# so the output must fit in what is left. A larger prompt goes to a backend with more room.
+# health_check_timeout: how long a health probe may take. Short, so a host that hangs is marked down in seconds
+# (the request timeout above is for generation and is much longer).
+x-context:
+  qwen3_30b: &qwen3_30b_info
+    max_input_tokens: 12288           # per slot: 65536 context / 4 parallel = 16384, minus 4096 output
+    health_check_timeout: 15
+  qwen3_4b: &qwen3_4b_info
+    max_input_tokens: 4096            # 8192 - 4096
+    health_check_timeout: 15
+
+model_list:
+  # ---- chat assistant: fast pool, big model takes what the small one cannot fit (and overflow at capacity)
+  - model_name: ats-chat
+    litellm_params: *qwen3_4b
+    model_info: *qwen3_4b_info
+  - model_name: ats-chat
+    litellm_params: *qwen3_30b
+    model_info: *qwen3_30b_info
+
+  # ---- grounded answers from graph facts
+  - model_name: ats-answer
+    litellm_params: *qwen3_4b
+    model_info: *qwen3_4b_info
+  - model_name: ats-answer
+    litellm_params: *qwen3_30b
+    model_info: *qwen3_30b_info
+
+  # ---- knowledge graph extraction: the 30B only. Ontology rules + Graphiti prompts + a section overflow the 4B's
+  # 8k context and its JSON got cut off ("Expecting value: line 1 column 2105").
+  - model_name: ats-extraction
+    litellm_params: *qwen3_30b
+    model_info: *qwen3_30b_info
+
+  # ---- screening agent: the big model (scoring quality, long resumes)
+  - model_name: ats-screening
+    litellm_params: *qwen3_30b
+    model_info: *qwen3_30b_info
+
+  # ---- "high-quality" profile (LLM_CLIENT_PROFILES): big model only
+  - model_name: ats-chat-quality
+    litellm_params: *qwen3_30b
+    model_info: *qwen3_30b_info
+  - model_name: ats-answer-quality
+    litellm_params: *qwen3_30b
+    model_info: *qwen3_30b_info
+  - model_name: ats-extraction-quality
+    litellm_params: *qwen3_30b
+    model_info: *qwen3_30b_info
+
+  # ---- embeddings
+  - model_name: ats-embedding
+    litellm_params: *nomic_embed
+    model_info:
+      mode: embedding
+      health_check_timeout: 15
+
+router_settings:
+  routing_strategy: least-busy
+  enable_pre_call_checks: true          # skip backends whose context window is too small for the request
+  num_retries: 2                        # on another backend of the same alias
+  allowed_fails: 3                      # failures within a minute before a backend is cooled down
+  cooldown_time: 30
+  fallbacks:
+    - ats-screening:
+        - ats-chat
+    - ats-chat-quality:
+        - ats-chat
+    - ats-answer-quality:
+        - ats-answer
+    - ats-extraction-quality:
+        - ats-extraction
+
+litellm_settings:
+  request_timeout: 1800
+  drop_params: false                    # keep response_format / tools exactly as sent
+  turn_off_message_logging: true        # never log prompts or replies (resumes are personal data)
+  telemetry: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Health-check routing (built into LiteLLM, no service code): every deployment gets a tiny real request every
+  # interval ("Hey how's it going?" / "What's 1 + 1?"); one that fails is skipped by the router until a later check
+  # passes. OFF while every alias points at the same local host: it was 10 probes a minute (one per deployment)
+  # taking generation slots from real work, and it cannot route around a single host anyway. Failover still works
+  # passively (allowed_fails + cooldown_time above, on real requests). Turn on, with a long interval, when aliases
+  # have backends on different hosts.
+  background_health_checks: false
+  health_check_interval: 600
+  health_check_staleness_threshold: 150     # ~2.5 intervals; older health state is ignored
+  enable_health_check_routing: true
+  health_check_ignore_transient_errors: true

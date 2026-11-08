@@ -1,6 +1,6 @@
 # Screening: autonomous agent + deterministic grounding
 
-The Strands agent activates the versioned skill (`ats_agent/skills/ats_screening/vN.py`) and calls four tools.
+The Strands agent activates the versioned skill (`agent_skill/skills/ats_screening/vN.py`) and calls four tools.
 Each tool = one schema-constrained LLM call followed by code checks, so the LLM can never invent facts that reach
 the result.
 

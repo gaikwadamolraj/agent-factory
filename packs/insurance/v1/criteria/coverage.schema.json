@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coverage criteria",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "policy_number": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "product_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "insurer_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "wording_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "period_start": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "period_end": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "territory_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "clauses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "policy_quote"
+        ],
+        "properties": {
+          "criterion_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "coverage",
+              "exclusion",
+              "condition",
+              "definition",
+              "limit",
+              "endorsement"
+            ]
+          },
+          "policy_quote": {
+            "type": "string"
+          },
+          "clause_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clause_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "applies_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decisive": {
+            "type": "boolean"
+          },
+          "condition_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "precedent_to_liability",
+              "notification",
+              "duty_of_care",
+              "security_requirement",
+              "maintenance",
+              "co_operation",
+              "documentation",
+              "premium_payment",
+              "other",
+              null
+            ]
+          },
+          "limit_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "deductible_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "waiting_period_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deadline_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "write_back": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modified_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "related_terms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "required_evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "unreadable_sections": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

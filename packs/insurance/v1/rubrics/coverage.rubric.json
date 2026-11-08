@@ -1,0 +1,83 @@
+{
+  "key": "coverage",
+  "version": "1",
+  "displayName": "Coverage assessment",
+  "maxScore": 100,
+  "grades": {
+    "covered": { "weight": 1.0, "label": "Covered" },
+    "conditional": { "weight": 0.5, "label": "Covered subject to conditions" },
+    "insufficient_evidence": { "weight": 0.0, "label": "Insufficient evidence" },
+    "excluded": { "weight": 0.0, "label": "Excluded by the policy" },
+    "not_applicable": { "weight": 0.0, "label": "Not applicable to this claim" }
+  },
+  "positiveGrades": ["covered", "conditional"],
+  "components": [
+    {
+      "kind": "graded",
+      "key": "insuring_clauses",
+      "points": 70,
+      "select": { "attributes": { "clause_type": ["insuring"] } },
+      "fallbackToAll": true
+    },
+    {
+      "kind": "graded",
+      "key": "conditions",
+      "points": 20,
+      "select": { "attributes": { "clause_type": ["condition"] } },
+      "fallbackComponent": "insuring_clauses"
+    },
+    {
+      "kind": "input",
+      "key": "evidence_completeness",
+      "points": 10,
+      "input": "evidence_ratio",
+      "thresholds": [
+        { "min": 1.0, "points": 10 },
+        { "min": 0.75, "points": 7 },
+        { "min": 0.5, "points": 3 },
+        { "min": 0.0, "points": 0 }
+      ]
+    }
+  ],
+  "deductions": [
+    {
+      "key": "mostly_unevidenced",
+      "points": 10,
+      "majorityGrade": "insufficient_evidence",
+      "among": ["covered", "conditional", "insufficient_evidence"]
+    }
+  ],
+  "caps": [
+    {
+      "key": "exclusion_applies",
+      "maxScore": 0,
+      "grades": ["excluded"],
+      "minFraction": 0.0,
+      "select": { "attributes": { "clause_type": ["exclusion"] } },
+      "reason": "an exclusion applies: {names}"
+    },
+    {
+      "key": "breached_condition_precedent",
+      "maxScore": 25,
+      "grades": ["excluded", "insufficient_evidence"],
+      "minFraction": 0.0,
+      "select": { "attributes": { "clause_type": ["condition"], "precedent": ["true"] } },
+      "reason": "a condition precedent to liability is not satisfied: {names}"
+    },
+    {
+      "key": "insuring_clause_not_met",
+      "maxScore": 40,
+      "grades": ["excluded", "insufficient_evidence", "not_applicable"],
+      "minFraction": 1.0,
+      "select": { "attributes": { "clause_type": ["insuring"] } },
+      "reason": "no insuring clause responds to this loss"
+    }
+  ],
+  "bands": [
+    { "min": 80, "band": "Covered", "recommendation": "Assess for settlement" },
+    { "min": 55, "band": "Covered with conditions", "recommendation": "Refer to an assessor" },
+    { "min": 25, "band": "Needs review", "recommendation": "Request further evidence" },
+    { "min": 0, "band": "Not covered", "recommendation": "Refer to an assessor before any decline" }
+  ],
+  "emptyCriteriaReason": "No coverage clauses could be read from the policy wording."
+}

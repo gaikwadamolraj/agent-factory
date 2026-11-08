@@ -1,0 +1,13 @@
+{{- /* LLM gateway config. llm-gateway-models = files/litellm-config.yaml (THE model configuration: backends,
+       aliases, routing, fallbacks); llm-gateway-backends = where each backend runs (read by litellm-config.yaml via
+       os.environ/...). The gateway Deployment carries a checksum of this file, so editing either rolls it. */ -}}
+{{- if .Values.infra.llmGateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "llm-gateway-models" "appName" "llm-gateway") | nindent 2 }}
+data:
+  {{- dict "config.yaml" (.Files.Get "files/litellm-config.yaml") | toYaml | nindent 2 }}
+---
+{{ include "ats.configMap" (dict "root" $ "name" "llm-gateway-backends" "namespace" .Values.infra.namespace "partOf" .Values.infra.namespace "appName" "llm-gateway" "data" .Values.infra.llmGateway.backends) }}
+{{- end }}

@@ -1,0 +1,12 @@
+{{- /* Postgres: only pods of the release namespace (ATS services, schema Job) and the KEDA operator (counts the
+       knowledge queue for the ScaledObject) may connect. */ -}}
+{{- if .Values.infra.postgres.enabled }}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "postgres-clients"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "postgres"
+    "port" 5432
+    "extraNamespaces" .Values.infra.postgres.extraClientNamespaces) }}
+{{- end }}

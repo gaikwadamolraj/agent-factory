@@ -2,7 +2,7 @@
 
 How a caller tells the shared knowledge service **what to extract** and **how to answer**. The service never
 hard-codes a domain: each use case brings its own guidance and (optionally) its own ontology. Schema source:
-`services/common/src/ats_common/knowledge/ontology.py` (validated on every call).
+`services/common/src/agent_common/knowledge/ontology.py` (validated on every call).
 
 ## 1. Free extraction vs. ontology
 
@@ -31,7 +31,7 @@ Write ingest guidance like a brief to a careful analyst:
 Answer guidance sets **tone and focus** only. The service's own rules (facts only, cite ids) always win.
 
 Keep guidance domain-agnostic where you can: describe *kinds* of things ("skills, tools, standards"), not specific
-technologies. The ATS guidance lives in `services/orchestrator/src/orchestrator/knowledge/guidance.py`.
+technologies. The ATS guidance lives in `services/ats/ats-orchestrator/src/ats_orchestrator/knowledge/guidance.py`.
 
 ## 3. Ontology schema
 
@@ -83,7 +83,7 @@ Invalid ontologies are rejected with `KNW-INV-0002` before anything is stored.
 ### 3.1 Authoring format (easier to write; accepted as-is)
 
 The same ontology can be written with dictionaries and an explicit edge map. The talent use case ships one:
-`services/orchestrator/src/orchestrator/knowledge/ontologies/talent_v2.json` (`generic_cv_career_graph` 2.0: 11
+`services/ats/ats-orchestrator/src/ats_orchestrator/knowledge/ontologies/talent_v2.json` (`generic_cv_career_graph` 2.0: 11
 entity types, 19 relations, typed and enum attributes, extraction rules).
 
 ```json
@@ -123,9 +123,9 @@ connect any types.
 ## 5. Using it from code
 
 ```python
-from ats_common.knowledge.client import KnowledgeClient, KnowledgeClientConfig
-from ats_common.knowledge.contracts import IngestRequest, SearchRequest
-from ats_common.knowledge.ontology import Ontology
+from agent_common.knowledge.client import KnowledgeClient, KnowledgeClientConfig
+from agent_common.knowledge.contracts import IngestRequest, SearchRequest
+from agent_common.knowledge.ontology import Ontology
 
 ontology = Ontology.model_validate(TALENT_V1_JSON)          # validate early, in your own service
 await knowledge.ingest(IngestRequest(client_id=1, project_id=2, namespace="talent", source_type="resume",

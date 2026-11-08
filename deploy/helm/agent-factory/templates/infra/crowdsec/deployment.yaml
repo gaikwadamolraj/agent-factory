@@ -1,0 +1,104 @@
+{{- /* CrowdSec LAPI + agent in one pod (image default: DISABLE_LOCAL_API=false, DISABLE_AGENT=false). The agent
+       acquires Traefik's JSON access log from a node hostPath shared with Traefik (single-node k3d topology, see
+       values infra.crowdsec) and the LAPI serves ban decisions to the bouncer Middleware on port lapiPort.
+       Objects: PersistentVolumeClaim (SQLite DB, required since 1.7.0), Deployment, Service "crowdsec".
+       strategy Recreate: the DB PVC is ReadWriteOnce, so never run two pods at once. */ -}}
+{{- with .Values.infra.crowdsec }}
+{{- if .enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "crowdsec-data" "appName" "crowdsec") | nindent 2 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "crowdsec" "appName" "crowdsec") | nindent 2 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "crowdsec") | nindent 8 }}
+      annotations:
+        checksum/acquis: {{ include "ats.checksum" (dict "root" $ "path" "infra/crowdsec/configmap.yaml") }}
+    spec:
+      {{- with .podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: crowdsec
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          env:
+            - name: COLLECTIONS
+              value: {{ .collections | quote }}
+            - name: DISABLE_ONLINE_API
+              value: {{ .disableOnlineApi | quote }}
+            {{- if .bouncerKeySecret }}
+            # Auto-register the bouncer with the key from the Secret (optional: the pod still starts without it, then
+            # register by hand with `cscli bouncers add`). The key is referenced, never rendered.
+            - name: {{ printf "BOUNCER_KEY_%s" .bouncerName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .bouncerKeySecret }}
+                  key: {{ .bouncerKeySecretKey }}
+                  optional: true
+            {{- end }}
+          ports:
+            - name: lapi
+              containerPort: {{ .lapiPort }}
+          readinessProbe:
+            tcpSocket:
+              port: lapi
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: lapi
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.global.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/crowdsec/data
+            - name: acquis
+              mountPath: /etc/crowdsec/acquis.d/traefik.yaml
+              subPath: traefik.yaml
+              readOnly: true
+            - name: traefik-logs
+              mountPath: {{ .accessLogHostPath | quote }}
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: crowdsec-data
+        - name: acquis
+          configMap:
+            name: crowdsec-acquis
+        # Shared with Traefik on the node: Traefik writes the access log here, the agent reads it (single-node k3d).
+        - name: traefik-logs
+          hostPath:
+            path: {{ .accessLogHostPath | quote }}
+            type: DirectoryOrCreate
+---
+{{ include "ats.infraService" (dict "root" $ "name" "crowdsec" "ports" (list (dict "name" "lapi" "port" (.lapiPort | int) "targetPort" "lapi"))) }}
+{{- end }}
+{{- end }}

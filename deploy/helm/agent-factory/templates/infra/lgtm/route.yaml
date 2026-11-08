@@ -1,0 +1,53 @@
+{{- /* Grafana under /grafana on the shared host. Lives in the infra namespace next to the lgtm Service, with its own
+       Traefik middlewares there: Traefik does not follow cross-namespace references (allowCrossNamespace is off).
+       Security headers and the general rate limit reuse the values of infra.routing.middlewares. */ -}}
+{{- with .Values.infra.lgtm.route }}
+{{- if and $.Values.infra.lgtm.enabled .enabled }}
+{{- $namespace := $.Values.infra.namespace }}
+{{- $middlewares := $.Values.infra.routing.middlewares }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "grafana-security-headers") | nindent 2 }}
+spec:
+  headers:
+    contentTypeNosniff: true
+    frameDeny: true
+    browserXssFilter: true
+    referrerPolicy: {{ $middlewares.referrerPolicy }}
+    contentSecurityPolicy: {{ $middlewares.contentSecurityPolicy | quote }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "grafana-rate-limit") | nindent 2 }}
+spec:
+  rateLimit:
+    average: {{ .rateLimit.average }}
+    burst: {{ .rateLimit.burst }}
+    period: {{ .rateLimit.period }}
+    sourceCriterion:
+      ipStrategy:
+        depth: {{ $middlewares.ipStrategyDepth }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "grafana" "annotations" (dict
+      "traefik.ingress.kubernetes.io/router.middlewares"
+      (printf "%s-grafana-security-headers@kubernetescrd, %s-grafana-rate-limit@kubernetescrd" $namespace $namespace))) | nindent 2 }}
+spec:
+  ingressClassName: {{ .className }}
+  rules:
+    - host: {{ $.Values.infra.routing.host }}
+      http:
+        paths:
+          - path: {{ .path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: lgtm
+                port:
+                  name: grafana
+{{- end }}
+{{- end }}

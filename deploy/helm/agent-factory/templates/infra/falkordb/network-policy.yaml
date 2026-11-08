@@ -1,0 +1,12 @@
+{{- /* FalkorDB holds tenant graph data: only the knowledge-graph pods of the release namespace
+       (app.kubernetes.io/component=knowledge-graph: MCP server and worker) may connect. */ -}}
+{{- if .Values.infra.falkordb.enabled }}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "falkordb-clients"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "falkordb"
+    "component" "knowledge-graph"
+    "port" 6379) }}
+{{- end }}

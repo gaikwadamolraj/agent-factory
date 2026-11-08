@@ -1,0 +1,91 @@
+{
+  "id": "insurance",
+  "version": "v1",
+  "displayName": "Insurance claims",
+  "description": "A claim assessed against its policy's coverage clauses, conditions and exclusions: extract, match, grade, score, report. The assessment is prepared for a person; the platform never declines a claim.",
+  "journeys": [
+    "onboard_subject",
+    "match_subject",
+    "bulk_match",
+    "ask_subject",
+    "review"
+  ],
+  "subjectTypes": [
+    {
+      "type": "claim",
+      "displayName": "Claim",
+      "schemaPath": "subjects/claim.schema.json"
+    },
+    {
+      "type": "policy",
+      "displayName": "Policy",
+      "schemaPath": "subjects/policy.schema.json"
+    }
+  ],
+  "criteria": [
+    {
+      "key": "coverage_clauses",
+      "displayName": "Coverage clauses",
+      "schemaPath": "criteria/coverage.schema.json"
+    }
+  ],
+  "rubrics": [
+    {
+      "key": "coverage",
+      "path": "rubrics/coverage.rubric.json",
+      "criteriaKey": "coverage_clauses"
+    }
+  ],
+  "ontology": {
+    "namespace": "claims",
+    "path": "ontology.json"
+  },
+  "guidance": {
+    "ingestPath": "guidance/ingest.md",
+    "answerPath": "guidance/answer.md"
+  },
+  "prompts": {
+    "extract_criteria": "prompts/extract_criteria.md",
+    "extract_subject": "prompts/extract_subject.md",
+    "grade": "prompts/grade.md"
+  },
+  "reports": {
+    "assessment": "reports/assessment.md"
+  },
+  "tools": [
+    {
+      "server": "agent-document",
+      "tools": [
+        "read_document",
+        "scan_document",
+        "chunk_document"
+      ]
+    },
+    {
+      "server": "agent-knowledge-graph",
+      "tools": [
+        "ingest_episode",
+        "search_knowledge"
+      ]
+    },
+    {
+      "server": "agent-guardrail",
+      "tools": [
+        "check_text"
+      ]
+    }
+  ],
+  "execution": {
+    "priorityTier": "standard",
+    "maxParallelTasks": 4,
+    "taskTimeoutSeconds": 900
+  },
+  "dataPolicy": {
+    "classification": "restricted",
+    "residency": "tenant-configured"
+  },
+  "humanApprovalRequiredFor": [
+    "match_subject",
+    "bulk_match"
+  ]
+}

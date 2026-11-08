@@ -1,0 +1,10 @@
+{{- /* Platform Redis: only pods of the release namespace may connect. */ -}}
+{{- if .Values.infra.redis.enabled }}
+{{ include "ats.callersNetworkPolicy" (dict
+    "root" $
+    "name" "redis-clients"
+    "namespace" .Values.infra.namespace
+    "partOf" .Values.infra.namespace
+    "appName" "redis"
+    "port" 6379) }}
+{{- end }}

@@ -1,0 +1,85 @@
+{{- /* The Temporal web UI under /temporal on the shared host.
+
+       It shows run internals - arguments, results, stack traces across every tenant - so it is protected like
+       the admin console rather than like Grafana: the same infra.routing.adminProtection IP allow-list and
+       basic-auth wall, reused rather than duplicated, plus the shared security headers and rate limit.
+
+       Lives in the infra namespace next to the temporal-ui Service, because Traefik does not follow
+       cross-namespace references (allowCrossNamespace is off for Middlewares). Default off. */ -}}
+{{- with .Values.infra.temporal.ui.route }}
+{{- if and $.Values.infra.temporal.enabled $.Values.infra.temporal.ui.enabled .enabled }}
+{{- $namespace := $.Values.infra.namespace }}
+{{- $middlewares := $.Values.infra.routing.middlewares }}
+{{- $admin := $.Values.infra.routing.adminProtection }}
+{{- $refs := list (printf "%s-temporal-security-headers@kubernetescrd" $namespace) (printf "%s-temporal-rate-limit@kubernetescrd" $namespace) }}
+{{- if $admin.ipAllowList.enabled }}
+{{- $refs = append $refs (printf "%s-temporal-ip-allow-list@kubernetescrd" $namespace) }}
+{{- end }}
+{{- if $admin.basicAuth.enabled }}
+{{- $refs = append $refs (printf "%s-temporal-basic-auth@kubernetescrd" $namespace) }}
+{{- end }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "temporal-security-headers") | nindent 2 }}
+spec:
+  headers:
+    contentTypeNosniff: true
+    frameDeny: true
+    browserXssFilter: true
+    referrerPolicy: {{ $middlewares.referrerPolicy }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "temporal-rate-limit") | nindent 2 }}
+spec:
+  rateLimit:
+    average: {{ .rateLimit.average }}
+    burst: {{ .rateLimit.burst }}
+    period: {{ .rateLimit.period }}
+    sourceCriterion:
+      ipStrategy:
+        depth: {{ $middlewares.ipStrategyDepth }}
+{{- if $admin.ipAllowList.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "temporal-ip-allow-list") | nindent 2 }}
+spec:
+  ipAllowList:
+    sourceRange:
+      {{- toYaml $admin.ipAllowList.allowedCIDRs | nindent 6 }}
+{{- end }}
+{{- if $admin.basicAuth.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "temporal-basic-auth") | nindent 2 }}
+spec:
+  basicAuth:
+    secret: {{ $admin.basicAuth.secret }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "temporal-ui" "annotations" (dict
+      "traefik.ingress.kubernetes.io/router.middlewares" (join ", " $refs))) | nindent 2 }}
+spec:
+  ingressClassName: {{ .className }}
+  rules:
+    - host: {{ $.Values.infra.routing.host }}
+      http:
+        paths:
+          - path: {{ $.Values.infra.temporal.ui.basePath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: temporal-ui
+                port:
+                  name: http
+{{- end }}
+{{- end }}

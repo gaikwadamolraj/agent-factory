@@ -6,11 +6,11 @@ Background on the worker itself: [impl_knowledge_graph.md](impl_knowledge_graph.
 ## 1. In one picture
 
 ```
-resume upload ─► ats-knowledge (API) ─► INSERT knowledge_episodes (status=queued)         Postgres = the queue
+resume upload ─► agent-knowledge-graph (API) ─► INSERT knowledge_episodes (status=queued)         Postgres = the queue
                                                    ▲            ▲
 KEDA operator ── every 15 s: SELECT COUNT(*) ──────┘            │ FOR UPDATE SKIP LOCKED
    backlog 0  ─► worker replicas 0 (after 5 min idle)           │
-   backlog ≥1 ─► worker replicas 1..max ─► ats-knowledge-worker pod(s) ─► Graphiti ─► FalkorDB
+   backlog ≥1 ─► worker replicas 1..max ─► agent-knowledge-graph-worker pod(s) ─► Graphiti ─► FalkorDB
 ```
 
 * **Backlog** = episodes being extracted (`processing`) + episodes due now (`queued`, `available_at <= now()`).
@@ -34,79 +34,76 @@ Nothing is lost: the job lives in Postgres until it is `done` or `failed`.
 
 | Path | Purpose |
 |---|---|
-| `deploy/k8s/keda-operator/kustomization.yml` | The KEDA operator: official release manifest pinned to **v2.20.2** (cluster-wide, namespace `keda`) |
-| `deploy/k8s/keda/` | Kustomize **Component** with the app's scaling rule: `scaled-object.yml`, `trigger-authentication.yml`, `worker-replicas-patch.yml` |
-| `deploy/k8s/overlays/dev`, `prod` | Include the component: `components: - ../../keda` |
-| `deploy.sh` | `keda` target; installs the operator automatically when it is missing |
+| `deploy.sh` (`KEDA_CHART_VERSION`) | The KEDA operator: Helm chart `kedacore/keda` pinned to **2.20.2** (release `keda`, namespace `agent-infra`); `keda` target, installed automatically when missing |
+| `deploy/helm/agent-factory/templates/infra/keda/` | The app's scaling rule: `scaled-object.yaml`, `trigger-authentication.yaml` (namespace `agent-factory`) |
+| `deploy/helm/agent-factory/values.yaml` (`keda.*`) | Limits, query, Postgres host; `keda.enabled` is on in dev and prod (the worker Deployment then has no `replicas`) |
 
 ## 4. Setup (automated)
 
-Prerequisites: the secret `ats-platform-secrets` with `postgres-user` and `postgres-password` (already there; KEDA
-uses the same login as the services to run its count query).
+Prerequisites: `agent-factory-secrets` with `database-url` (KEDA reads the same connection string the services use to
+run its count query - no separate database login). The `postgres-clients` NetworkPolicy admits the infra namespace
+(`agent-infra`), where the KEDA operator runs.
 
 ```bash
-./deploy.sh                 # full deploy: installs KEDA if missing, then schema + all services
+./deploy.sh                 # full deploy: installs KEDA if missing, then the release
 ./deploy.sh keda            # install or upgrade only the KEDA operator
-./deploy.sh knowledge       # also installs KEDA first if the cluster does not have it
 ```
 
 What `./deploy.sh keda` runs:
 
 ```bash
-kubectl apply --server-side --force-conflicts -k deploy/k8s/keda-operator
-kubectl wait --for=condition=established crd/scaledobjects.keda.sh crd/triggerauthentications.keda.sh
-kubectl -n keda rollout status deployment/keda-operator          # + keda-metrics-apiserver, keda-admission
+helm upgrade --install keda keda --repo https://kedacore.github.io/charts --version 2.20.2 \
+  -n agent-infra --create-namespace --wait --timeout 10m
 ```
 
-The app overlay then applies the `ScaledObject` and `TriggerAuthentication` in `ats-platform`.
+A KEDA installed earlier from the release manifest is kept as is by `./deploy.sh`; `./deploy.sh keda` asks to
+remove it first (`kubectl delete -f https://github.com/kedacore/keda/releases/download/v2.20.2/keda-2.20.2.yaml`).
 
-Two values in `deploy/k8s/keda/scaled-object.yml` depend on the cluster. Check them for a new cluster:
+Connection (`keda.postgres`):
 
 | Field | Value here | Why |
 |---|---|---|
-| `host` | `postgres-service.amol.svc.cluster.local` | Full DNS name: the KEDA operator runs in namespace `keda`, where the short alias does not resolve |
-| `dbName` | `ats_platform` | Same database as `DATABASE_NAME` in the ConfigMaps |
+| `connectionKey` | `database-url` | KEDA authenticates with the shared `database-url` from `agent-factory-secrets`; its host is the FQDN `postgres.agent-infra.svc.cluster.local`, which the operator resolves from its own namespace |
 
 ## 5. Verify
 
 ```bash
-kubectl -n keda get pods                                               # 3 pods Running
-kubectl -n ats-platform get scaledobject ats-knowledge-worker          # READY=True; ACTIVE=True while backlog > 0
-kubectl -n ats-platform get hpa keda-hpa-ats-knowledge-worker          # created and owned by KEDA
-kubectl -n ats-platform get deploy ats-knowledge-worker                # 0/0 idle, 1/1 with backlog
-kubectl -n ats-platform describe scaledobject ats-knowledge-worker     # Events: connection or query errors
+kubectl -n agent-infra get pods                                               # 3 pods Running
+kubectl -n agent-factory get scaledobject agent-knowledge-graph-worker          # READY=True; ACTIVE=True while backlog > 0
+kubectl -n agent-factory get hpa keda-hpa-agent-knowledge-graph-worker          # created and owned by KEDA
+kubectl -n agent-factory get deploy agent-knowledge-graph-worker                # 0/0 idle, 1/1 with backlog
+kubectl -n agent-factory describe scaledobject agent-knowledge-graph-worker     # Events: connection or query errors
 ```
 
-Live test: upload a resume in the UI, then `kubectl -n ats-platform get pods -w | grep knowledge-worker`; a pod
+Live test: upload a resume in the UI, then `kubectl -n agent-factory get pods -w | grep knowledge-graph-worker`; a pod
 starts within about 15 s and goes away about 5 minutes after the queue is empty.
 
 ## 6. Tuning
 
 | Setting | File | Default | Change when |
 |---|---|---|---|
-| `maxReplicaCount` | scaled-object.yml | 1 | You add LLM capacity (another LM Studio host, a hosted model). More pods on one GPU/CPU host only queue on it |
-| `targetQueryValue` | scaled-object.yml | 1 | You change `WORKER_CONCURRENCY` (episodes per pod); keep them equal |
-| `minReplicaCount` | scaled-object.yml | 0 | Set 1 to keep a warm pod (no ~15 s wake-up) |
-| `cooldownPeriod` | scaled-object.yml | 300 s | Keep the pod longer between uploads |
-| `pollingInterval` | scaled-object.yml | 15 s | Faster wake-up vs. fewer count queries |
-| `WORKER_LEASE_S` | base/knowledge/config.yml | 4200 s | Must stay above `GRAPH_TIMEOUT_S` |
+| `maxReplicaCount` | values.yaml `keda.*` | 1 | You add LLM capacity (another LM Studio host, a hosted model). More pods on one GPU/CPU host only queue on it |
+| `targetQueryValue` | values.yaml `keda.*` | 1 | You change `WORKER_CONCURRENCY` (episodes per pod); keep them equal |
+| `minReplicaCount` | values.yaml `keda.*` | 0 | Set 1 to keep a warm pod (no ~15 s wake-up) |
+| `cooldownPeriod` | values.yaml `keda.*` | 300 s | Keep the pod longer between uploads |
+| `pollingInterval` | values.yaml `keda.*` | 15 s | Faster wake-up vs. fewer count queries |
+| `WORKER_LEASE_S` | values.yaml `services.agentKnowledgeGraph.config` | 4200 s | Must stay above `GRAPH_TIMEOUT_S` |
 
 ## 7. Upgrade, disable, remove
 
-* **Upgrade KEDA**: change the version in `deploy/k8s/keda-operator/kustomization.yml` (read the release notes),
-  then `./deploy.sh keda`.
-* **Run without autoscaling**: remove the `components:` lines from the overlay; the worker then runs as one fixed
-  replica (from `base/knowledge-worker/deployment.yml`).
-* **Pause scaling** temporarily: `kubectl -n ats-platform annotate scaledobject ats-knowledge-worker
+* **Upgrade KEDA**: change `KEDA_CHART_VERSION` in `deploy.sh` (read the release notes), then `./deploy.sh keda`.
+* **Run without autoscaling**: `keda.enabled: false` in the values file; the worker then runs
+  `services.agentKnowledgeGraphWorker.replicas` fixed replicas.
+* **Pause scaling** temporarily: `kubectl -n agent-factory annotate scaledobject agent-knowledge-graph-worker
   autoscaling.keda.sh/paused-replicas="1" --overwrite` (remove the annotation to resume).
 * **Remove KEDA** from the cluster: delete the ScaledObject first, then
-  `kubectl delete -k deploy/k8s/keda-operator`.
+  `helm uninstall keda -n agent-infra`.
 
 ## 8. Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| ScaledObject `READY=False` | `describe scaledobject`: wrong `host`/`dbName`, wrong secret keys, Postgres unreachable from namespace `keda` |
+| ScaledObject `READY=False` | `describe scaledobject`: wrong `host`/`dbName`, wrong secret keys, Postgres unreachable from namespace `agent-infra` |
 | Backlog but 0 pods | `ACTIVE` column; the query only counts due rows (a retry backoff may be pending: `available_at`) |
 | Pods start but nothing finishes | Worker logs (`knowledge.episode_failed` with `error`); LM Studio `lms ps` (only Qwen + embeddings should be loaded) |
-| `deploy.sh` stops at KEDA rollout | `kubectl -n keda get pods`, `kubectl -n keda logs deploy/keda-operator` |
+| `deploy.sh` stops at KEDA rollout | `kubectl -n agent-infra get pods`, `kubectl -n agent-infra logs deploy/keda-operator` |

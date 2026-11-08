@@ -1,0 +1,20 @@
+{{- /* KEDA reads the Postgres connection string (the same database-url the apps use) from secrets.platform, so no
+       raw database credentials are duplicated into this namespace. The URL's host is an in-cluster FQDN, which the
+       KEDA operator resolves from its own namespace. Never copied into a ScaledObject. One authentication object
+       is shared by every scaled object, because they all read the same database. */ -}}
+{{- with .Values.keda }}
+{{- if .enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-postgres
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ats.chartLabels" $ | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: {{ $.Values.secrets.platform }}
+      key: {{ .postgres.connectionKey }}
+{{- end }}
+{{- end }}

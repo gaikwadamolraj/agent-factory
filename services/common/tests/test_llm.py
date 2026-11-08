@@ -1,4 +1,4 @@
-"""ats_common.llm: model policy per client, cache identity, guarded calls (error mapping, retry), embeddings."""
+"""agent_common.llm: model policy per client, cache identity, guarded calls (error mapping, retry), embeddings."""
 import asyncio
 from types import SimpleNamespace
 
@@ -7,10 +7,10 @@ import openai
 import pytest
 from pydantic import BaseModel
 
-import ats_common.llm.calls as calls
-import ats_common.llm.embeddings as embeddings
-from ats_common.errors import AppError, Errors
-from ats_common.llm import (LLMSettings, Purpose, embed_documents, embed_query, embed_text, guarded, model_for,
+import agent_common.llm.calls as calls
+import agent_common.llm.embeddings as embeddings
+from agent_common.errors import AppError, Errors
+from agent_common.llm import (LLMSettings, Purpose, embed_documents, embed_query, embed_text, guarded, model_for,
                             model_identity, profile_of, reset_llm_settings, structured_completion)
 
 PROFILES = '{"high-quality": {"chat": "ats-chat-quality", "embedding": "never-used"}}'

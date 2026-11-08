@@ -6,13 +6,13 @@ the store each step reads or writes, every LLM call, and the exact prompt layout
 [impl_knowledge_graph.md](impl_knowledge_graph.md), [impl_abort.md](impl_abort.md), [llm_gateway.md](llm_gateway.md).
 
 ```
-browser ─► ats-orchestrator (FastAPI, SSE) ──MCP──► ats-agent      (screening, Strands agent, 4 steps)
-                │                          ──MCP──► ats-compute ──► ats-sandbox   (calculate tool only)
-                │                          ──MCP──► ats-knowledge (graph search) ◄─ queue ─ ats-knowledge-worker
+browser ─► ats-orchestrator (FastAPI, SSE) ──MCP──► agent-skill      (screening, Strands agent, 4 steps)
+                │                          ──MCP──► agent-compute ──► agent-sandbox   (calculate tool only)
+                │                          ──MCP──► agent-knowledge-graph (graph search) ◄─ queue ─ agent-knowledge-graph-worker
                 ├─► Postgres  chats, chat_messages, documents, document_blobs, document_chunks (pgvector + tsv),
                 │             screenings, knowledge_episodes, agent_sessions/agent_states/agent_messages
                 ├─► Redis     screening-result cache, abort flags, membership cache
-                └─► ats-llm-gateway (LiteLLM) ─► qwen3-4b (fast, 8k) | qwen2.5-14b (65k) | nomic-embed
+                └─► llm-gateway (LiteLLM) ─► qwen3-4b (fast, 8k) | qwen2.5-14b (65k) | nomic-embed
 ```
 
 ## Stores at a glance
@@ -25,7 +25,7 @@ browser ─► ats-orchestrator (FastAPI, SSE) ──MCP──► ats-agent     
 | Screening | `screenings.result` (full JSON: requirements, roles, questions, breakdown) | screening | `get_screening_details`, work history, calculate |
 | Screening cache | Redis `SCREENING_RESULT` (tenant + skill + JD hash + resume hash + model identity) | screening | the same screening again |
 | Knowledge graph | FalkorDB graph `talent__c{client}_p{project}`; queue `knowledge_episodes` | knowledge worker | `search_candidate_knowledge` |
-| Agent memory | `agent_sessions/agent_states/agent_messages` (per user + project) | ats-agent | `ask_screening_agent` |
+| Agent memory | `agent_sessions/agent_states/agent_messages` (per user + project) | agent-skill | `ask_screening_agent` |
 | Chat memory | `chat_memory` (summary + notes of the recruiter's messages, `last_message_id`) | after each ask turn (background) | the next ask turn |
 | Turn records | `chat_turns` (one JSON record per turn: journey, skill, steps, tools, grounding, memory, security, model, outcome, duration) | end of every turn | audit, debugging, analytics |
 
@@ -61,7 +61,7 @@ Button "Screen candidate" (`action=screen`) → `perform_screening`; or the chat
 1. Load `chats.jd_text` and the resume text. Missing → friendly `JD_MISSING` / `RESUME_MISSING`.
 2. **Cache.** Redis key from JD hash + resume hash + skill version + model identity (`ats-screening@<config version>`).
    A hit returns the stored result immediately.
-3. **ats-agent over MCP** (`screen`): a Strands agent runs the `ats_screening` skill, four steps in order. Each step
+3. **agent-skill over MCP** (`screen`): a Strands agent runs the `ats_screening` skill, four steps in order. Each step
    is one schema-constrained LLM call (`ats-screening`, the 14B) followed by deterministic checks:
    `analyze_job_description` → `analyze_candidate_profile` → `match_requirements` (every quote must exist in
    the text, `screening/grounding.py`) → `write_verdict` (score computed in code, `screening/scoring.py`).
@@ -117,8 +117,8 @@ The excerpts are added to the **prompt only**. The stored message stays as the u
 | `search_documents(query, source)` | Same hybrid search as grounding, headers pinned, up to 8,000 chars | `document_chunks` |
 | `get_screening_details(section)` | requirements / gaps / questions / summary / breakdown | `screenings.result` |
 | `screen_candidate()` | Journey 2 | as Journey 2 |
-| `calculate(question)` | An LLM writes Python, ats-compute runs it in ats-sandbox, retried with the error up to 3 times | `screenings.result.roles` + resume text |
-| `search_candidate_knowledge(question)` | Graph facts across the project's candidates | FalkorDB via ats-knowledge |
+| `calculate(question)` | An LLM writes Python, agent-compute runs it in agent-sandbox, retried with the error up to 3 times | `screenings.result.roles` + resume text |
+| `search_candidate_knowledge(question)` | Graph facts across the project's candidates | FalkorDB via agent-knowledge-graph |
 | `ask_screening_agent(question)` | The agent's memory of this user's earlier screenings | `agent_*` tables |
 
 ### 3.4 Chat history and memory
@@ -135,9 +135,9 @@ The excerpts are added to the **prompt only**. The stored message stays as the u
 ## Journey 4: Ask across candidates (knowledge graph)
 (Facts about the chat's own candidate already arrive with every turn, see 3.1 step 2.)
 
-1. The chat model calls `search_candidate_knowledge`. The orchestrator calls ats-knowledge `search_knowledge` over MCP
-   with tenant headers and a service JWT (`aud=ats-knowledge`).
-2. ats-knowledge: semantic cache lookup (Redis 8 vectors, scoped by tenant + graph version + answer model) →
+1. The chat model calls `search_candidate_knowledge`. The orchestrator calls agent-knowledge-graph `search_knowledge` over MCP
+   with tenant headers and a service JWT (`aud=agent-knowledge-graph`).
+2. agent-knowledge-graph: semantic cache lookup (Redis 8 vectors, scoped by tenant + graph version + answer model) →
    Graphiti hybrid search on the tenant's graph → facts. The orchestrator asks for facts only (`answer=false`).
 3. The facts go back to the chat model as the tool result. A graph that is not built yet returns "no facts yet,
    use search_documents".

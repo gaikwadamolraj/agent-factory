@@ -1,0 +1,120 @@
+{{- /* PgBouncer: connection pooler in front of Postgres, for the many short-lived connections KEDA-scaled pods open.
+       Stateless (Deployment). Credentials from secrets.infra (same as Postgres). Apps reach it by FQDN
+       (pgbouncer.<infra-namespace>.svc.cluster.local:<port>) when their database-url points here and DB_PGBOUNCER=true.
+       Default off: enable the component, then point database-url at it and set DB_PGBOUNCER=true on the services.
+       Auth: with authUser set, PgBouncer looks credentials up in Postgres (auth_query) with a low-privilege role and
+       stores no application password in the pod. Without it the image writes DB_PASSWORD into userlist.txt - in
+       CLEARTEXT when auth_type is scram-sha-256 or plain. See docs/impl_pgbouncer.md and values.infra.pgbouncer.
+       NOTE: transaction pooling + Postgres auth must be validated against the running Postgres at deploy time; the
+       schema migration connects DIRECTLY to Postgres (DDL), never through the pooler. */ -}}
+{{- with .Values.infra.pgbouncer }}
+{{- if .enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "pgbouncer" "appName" "pgbouncer") | nindent 2 }}
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "pgbouncer") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: pgbouncer
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (.containerSecurityContext | default $.Values.global.containerSecurityContext) | nindent 12 }}
+          env:
+            - name: DB_HOST
+              value: {{ printf "postgres.%s.svc.cluster.local" $.Values.infra.namespace | quote }}
+            - name: DB_PORT
+              value: "5432"
+            {{- if .authUser }}
+            {{- /* auth_query mode: PgBouncer authenticates each client by asking Postgres as the low-privilege
+                   lookup role, so DB_USER/DB_PASSWORD are deliberately NOT set - the entrypoint would otherwise
+                   append the application password to userlist.txt (cleartext under scram-sha-256). The lookup
+                   role's own password is the only credential the pod holds. */}}
+            - name: AUTH_USER
+              value: {{ .authUser | quote }}
+            - name: AUTH_QUERY
+              value: {{ .authQuery | quote }}
+            {{- with .authDbname }}
+            - name: AUTH_DBNAME
+              value: {{ . | quote }}
+            {{- end }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: pgbouncer-auth-password
+            - name: DB_USER
+              value: {{ .authUser | quote }}
+            {{- else }}
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-password
+            {{- end }}
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: postgres-db
+            - name: POOL_MODE
+              value: {{ .poolMode | quote }}
+            - name: AUTH_TYPE
+              value: {{ .authType | quote }}
+            - name: MAX_CLIENT_CONN
+              value: {{ .maxClientConn | quote }}
+            - name: DEFAULT_POOL_SIZE
+              value: {{ .defaultPoolSize | quote }}
+            - name: IGNORE_STARTUP_PARAMETERS
+              value: {{ .ignoreStartupParameters | quote }}
+            - name: ADMIN_USERS
+              value: {{ .adminUsers | quote }}
+            {{- with .statsUsers }}
+            - name: STATS_USERS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .serverTlsSslmode }}
+            - name: SERVER_TLS_SSLMODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .clientTlsSslmode }}
+            - name: CLIENT_TLS_SSLMODE
+              value: {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: pgbouncer
+              containerPort: 5432
+          readinessProbe:
+            tcpSocket:
+              port: pgbouncer
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "pgbouncer" "ports" (list (dict "name" "pgbouncer" "port" .listenPort "targetPort" "pgbouncer"))) }}
+{{- end }}
+{{- end }}

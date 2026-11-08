@@ -1,0 +1,75 @@
+{{- /* LLM gateway: LiteLLM proxy, OpenAI-compatible, cluster-internal (Deployment + Service).
+       One replica: the router tracks requests in flight per backend in memory (least-busy routing). For more
+       replicas, give the router a shared Redis (router_settings.redis_host) so capacity is counted across replicas.
+       Keys come from Secret secrets.infra (see files/secret.example.yaml). */ -}}
+{{- with .Values.infra.llmGateway }}
+{{- if .enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "llm-gateway" "appName" "llm-gateway") | nindent 2 }}
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "llm-gateway") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "ats.checksum" (dict "root" $ "path" "infra/llm-gateway/configmaps.yaml") }}
+    spec:
+      securityContext:
+        {{- toYaml .podSecurityContext | nindent 8 }}
+      containers:
+        - name: litellm
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/litellm/config.yaml
+            - --port
+            - "4000"
+            - --num_workers
+            - {{ .numWorkers | quote }}
+          ports:
+            - name: http
+              containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: llm-gateway-backends
+          env:
+            {{- include "ats.env" (dict "root" $ "env" .env) | nindent 12 }}
+          volumeMounts:
+            - name: models
+              mountPath: /etc/litellm
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.global.containerSecurityContext | nindent 12 }}
+      volumes:
+        - name: models
+          configMap:
+            name: llm-gateway-models
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .tmpSizeLimit }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "llm-gateway" "ports" (list (dict "name" "http" "port" 80 "targetPort" "http"))) }}
+{{- end }}
+{{- end }}

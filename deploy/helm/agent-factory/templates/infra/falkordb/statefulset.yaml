@@ -1,0 +1,71 @@
+{{- /* FalkorDB: graph store of the knowledge service (one graph per namespace + client + project).
+       StatefulSet with a persistent volume (AOF persistence on). Browser UI disabled. Password from
+       secrets.infra (key falkordb-password). Only the knowledge-graph pods may connect (network-policy.yaml). */ -}}
+{{- with .Values.infra.falkordb }}
+{{- if .enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "falkordb" "appName" "falkordb") | nindent 2 }}
+spec:
+  serviceName: falkordb
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: falkordb
+  template:
+    metadata:
+      labels:
+        {{- include "ats.podLabels" (dict "appName" "falkordb") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .podSecurityContext | nindent 8 }}
+      containers:
+        - name: falkordb
+          image: {{ .image }}
+          imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: BROWSER
+              value: "0"
+            - name: FALKORDB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.infra }}
+                  key: falkordb-password
+            - name: REDIS_ARGS
+              value: {{ printf "--requirepass $(FALKORDB_PASSWORD) %s" .redisArgs | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: redis
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.global.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/falkordb/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .storage }}
+---
+{{ include "ats.infraService" (dict "root" $ "name" "falkordb" "ports" (list (dict "name" "redis" "port" 6379 "targetPort" "redis"))) }}
+{{- end }}
+{{- end }}

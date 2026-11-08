@@ -1,0 +1,26 @@
+{{- /*
+  THE generic config template: one ConfigMap <name>-config per backend (services + agents) that declares a `config`
+  map, rendered with ats.configMap. ConfigMaps keep a stable name; the pods that read them carry a checksum/*
+  annotation (ats.configChecksums, set in backend.yaml) so a config change rolls exactly those pods.
+
+  Config stays in its own template (CLAUDE.md §12). The auth-service ConfigMap also gets OAUTH_CLIENT_AUDIENCES,
+  rendered from its oauthClients (ats.configData). The shared auth-config (authConfig: issuer, JWKS and token
+  URLs; in the envFrom of every service) is rendered here too. llm-config lives in templates/infra/llm-config.
+*/ -}}
+{{- $root := . -}}
+{{- range $group := (list .Values.services .Values.agents) }}
+{{- range $key, $svc := $group }}
+{{- if and $svc.enabled $svc.config }}
+{{- $name := include "ats.serviceName" (dict "key" $key "values" $svc) }}
+---
+{{ include "ats.configMap" (dict
+    "root" $root
+    "name" (printf "%s-config" $name)
+    "appName" $name
+    "data" (include "ats.configData" (dict "config" $svc.config "oauthClients" $svc.oauthClients) | fromYaml)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+---
+{{- /* auth-config: AUTH_ISSUER / AUTH_JWKS_URL / AUTH_TOKEN_URL (authConfig), in the envFrom of every service. */}}
+{{ include "ats.configMap" (dict "root" $root "name" "auth-config" "data" .Values.authConfig) }}

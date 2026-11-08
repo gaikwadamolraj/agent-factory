@@ -1,0 +1,81 @@
+{
+  "id": "ats",
+  "version": "v1",
+  "displayName": "Recruitment (ATS)",
+  "description": "Candidate screening against a job description: extract, match, grade, score, report.",
+  "journeys": [
+    "onboard_subject",
+    "match_subject",
+    "bulk_match",
+    "ask_subject"
+  ],
+  "subjectTypes": [
+    {
+      "type": "candidate",
+      "displayName": "Candidate",
+      "schemaPath": "subjects/candidate.schema.json"
+    }
+  ],
+  "criteria": [
+    {
+      "key": "job_requirements",
+      "displayName": "Job requirements",
+      "schemaPath": "criteria/job_requirements.schema.json"
+    }
+  ],
+  "rubrics": [
+    {
+      "key": "fit",
+      "path": "rubrics/fit.rubric.json",
+      "criteriaKey": "job_requirements"
+    }
+  ],
+  "ontology": {
+    "namespace": "talent",
+    "path": "ontology.json"
+  },
+  "guidance": {
+    "ingestPath": "guidance/ingest.md",
+    "answerPath": "guidance/answer.md"
+  },
+  "prompts": {
+    "jd_analysis": "prompts/jd_analysis.md",
+    "profile_analysis": "prompts/profile_analysis.md",
+    "match": "prompts/match.md",
+    "verdict": "prompts/verdict.md"
+  },
+  "reports": {},
+  "tools": [
+    {
+      "server": "agent-document",
+      "tools": [
+        "read_document",
+        "scan_document",
+        "chunk_document"
+      ]
+    },
+    {
+      "server": "agent-knowledge-graph",
+      "tools": [
+        "ingest_episode",
+        "search_knowledge"
+      ]
+    },
+    {
+      "server": "agent-guardrail",
+      "tools": [
+        "check_text"
+      ]
+    }
+  ],
+  "execution": {
+    "priorityTier": "standard",
+    "maxParallelTasks": 4,
+    "taskTimeoutSeconds": 600
+  },
+  "dataPolicy": {
+    "classification": "confidential",
+    "residency": "tenant-configured"
+  },
+  "humanApprovalRequiredFor": []
+}

@@ -28,6 +28,6 @@ Details
 * The agent request id is registered on the `RunningTurn` before the MCP call and removed only after success, so
   it is still known when the abort handler runs.
 * `resilient_call` never retries or swallows `CancelledError`.
-* Observability: `ats_turn_aborts_total`, `ats_agent_cancellations_total`,
-  `ats_agent_screenings_total{outcome="cancelled"}`; logs `agent.screening_cancelled`, `agent.cancel_not_running`
+* Observability: `agent_turn_aborts_total`, `agent_cancellations_total`,
+  `agent_screenings_total{outcome="cancelled"}`; logs `agent.screening_cancelled`, `agent.cancel_not_running`
   (the explicit cancel arrived after the stream close had already stopped the work).
