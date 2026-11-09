@@ -1,0 +1,56 @@
+# CrowdSec additions to the Traefik static config. Apply this ON TOP of traefik-gateway-config.yaml, and only
+# when turning the behavioural IPS on (infra.routing.crowdsec.enabled=true AND the infra.crowdsec LAPI
+# component). It is separate because its volumes have a hard prerequisite, and a missing one leaves Traefik
+# stuck in ContainerCreating - taking the whole host's routing down with it.
+#
+# BEFORE applying, create the bouncer key in BOTH namespaces (it is never rendered into a manifest):
+#
+#   kubectl -n kube-system create secret generic crowdsec-bouncer --from-literal=api-key='<key>'
+#   kubectl -n agent-infra create secret generic crowdsec-bouncer --from-literal=api-key='<key>'
+#   kubectl apply -f deploy/review/amol-host/traefik-gateway-config.yaml
+#   kubectl apply -f deploy/review/amol-host/traefik-crowdsec-config.yaml
+#   kubectl -n kube-system rollout status deploy/traefik
+#
+# k3s merges HelmChartConfig resources of the same name, so this replaces the file above rather than adding
+# to it: keep both applied, with this one last. See docs/gateway_security.md section 5c.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    providers:
+      kubernetesCRD:
+        allowCrossNamespace: true
+    experimental:
+      plugins:
+        coraza:
+          moduleName: github.com/jptosso/coraza-traefik
+          version: v0.2.2
+        # The plugin name "crowdsec" must match the chart's crowdsec Middleware (spec.plugin.crowdsec).
+        crowdsec:
+          moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+          version: v1.4.2
+    # CrowdSec's agent reads the access log this writes, and acquires it from the SAME host path
+    # (infra.crowdsec.accessLogHostPath, default /var/log/traefik).
+    logs:
+      access:
+        enabled: true
+        format: json
+        filePath: /var/log/traefik/access.log
+    deployment:
+      additionalVolumes:
+        - name: crowdsec-access-log
+          hostPath:
+            path: /var/log/traefik
+            type: DirectoryOrCreate
+        - name: crowdsec-bouncer-key
+          secret:
+            secretName: crowdsec-bouncer
+    additionalVolumeMounts:
+      - name: crowdsec-access-log
+        mountPath: /var/log/traefik
+      - name: crowdsec-bouncer-key
+        mountPath: /etc/traefik/crowdsec
+        readOnly: true

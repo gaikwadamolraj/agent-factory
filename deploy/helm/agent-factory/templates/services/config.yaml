@@ -8,16 +8,23 @@
   URLs; in the envFrom of every service) is rendered here too. llm-config lives in templates/infra/llm-config.
 */ -}}
 {{- $root := . -}}
+{{- /* global.logLevel, when set, is the log level of every backend: one dev switch instead of editing each
+       block. A service that must stay quieter keeps its own level by setting LOG_LEVEL_PINNED: "true". */ -}}
+{{- $globalLevel := default "" $root.Values.global.logLevel -}}
 {{- range $group := (list .Values.services .Values.agents) }}
 {{- range $key, $svc := $group }}
 {{- if and $svc.enabled $svc.config }}
 {{- $name := include "ats.serviceName" (dict "key" $key "values" $svc) }}
+{{- $data := include "ats.configData" (dict "config" $svc.config "oauthClients" $svc.oauthClients) | fromYaml }}
+{{- if and $globalLevel (ne (default "" (get $svc.config "LOG_LEVEL_PINNED")) "true") }}
+{{- $_ := set $data "LOG_LEVEL" $globalLevel }}
+{{- end }}
 ---
 {{ include "ats.configMap" (dict
     "root" $root
     "name" (printf "%s-config" $name)
     "appName" $name
-    "data" (include "ats.configData" (dict "config" $svc.config "oauthClients" $svc.oauthClients) | fromYaml)) }}
+    "data" $data) }}
 {{- end }}
 {{- end }}
 {{- end }}

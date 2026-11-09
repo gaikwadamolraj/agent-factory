@@ -47,9 +47,19 @@ Two processes from one image (details and file layout: `services/agents/agent-kn
    Each section's graph episode id is stored at once (`graph_episode_uuids`), so a retry resumes with the next
    section. Timeout `GRAPH_TIMEOUT_S` per section; own circuit breaker (`knowledge.extraction`).
    Output budget: Graphiti asks for `max_tokens=16384` in edge extraction; `CappedOutputClient` caps every
-   request at `LLM_MAX_OUTPUT_TOKENS` (an 8k backend otherwise rejects it, or cuts the JSON off mid-answer).
+   request at `EXTRACTION_MAX_OUTPUT_TOKENS` — extraction's **own** budget, not the platform's
+   `LLM_MAX_OUTPUT_TOKENS`. A chat reply is a paragraph; an extraction is a large nested JSON document, and
+   sizing both from one number let the chat budget truncate the graph (`KNW-INT-0001` on every attempt, the
+   JSON unparseable rather than merely short).
+   HTTP client: ours, built from `gateway_client_args()`. `LLMConfig` carries only the model and credentials,
+   so a Graphiti-built client falls back to the OpenAI library's default timeout — far shorter than one
+   extraction on a local model — and the call dies with "Request timed out" while the gateway is still
+   generating. Passing the client through is what makes `LLM_TIMEOUT_S` reach it.
 4. Success: `done`, raw text cleared, graph version bumped. Failure: back to `queued` with exponential backoff
    (60 s, 120 s, ...); after `WORKER_MAX_ATTEMPTS` the status is `failed` and the text is cleared.
+   An episode claimed with no text left and no sections done yet is not finished as `done` — that would record
+   a success for a graph that gained nothing. It fails for good with `KNW-NFD-0003`. Re-ingesting the document
+   is the supported way back (step 2 of **Ingest** restores the text); re-queuing the row by hand is not.
 
 **Search** (`search_knowledge`)
 1. Scope = graph id + graph version + guidance + ontology + answer mode + filters. Semantic cache lookup (exact

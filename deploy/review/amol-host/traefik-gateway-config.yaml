@@ -1,15 +1,20 @@
-# Traefik static configuration for the gateway. Apply ONCE, then review. NOT applied by ./deploy.sh (it changes the
-# k3s Traefik add-on in kube-system, another namespace - the chart must never touch that).
+# Traefik static config for the shared host, as a k3s HelmChartConfig (Traefik is k3s's own chart, outside
+# ours). Apply once per cluster, then roll Traefik:
 #
 #   kubectl apply -f deploy/review/amol-host/traefik-gateway-config.yaml
 #   kubectl -n kube-system rollout status deploy/traefik
 #
-# It enables the things the in-chart gateway needs:
+# This file is the MINIMUM the chart's routing needs:
 #   1. allowCrossNamespace - the IngressRoutes live in agent-infra but point at Services in agent-factory.
+#      Without it Traefik refuses the reference, the routers never register, and the UIs 404 or fall through
+#      to whatever else claims the host.
 #   2. the Coraza WAF plugin (OWASP CRS) - referenced by the waf Middleware when infra.routing.waf.enabled=true.
-#   3. the CrowdSec bouncer plugin + a JSON access log - for the behavioural IPS (infra.routing.crowdsec.enabled=true
-#      AND the infra.crowdsec LAPI component). CrowdSec's agent reads the access log the file section below writes.
-# Non-k3s clusters: set the same under Traefik's static config / Helm values instead of this HelmChartConfig.
+#      Declaring a plugin costs nothing until a Middleware uses it.
+#
+# CrowdSec is NOT here. It needs extra volumes and a `crowdsec-bouncer` Secret, and a missing Secret leaves the
+# Traefik pod stuck in ContainerCreating - which would make the behavioural IPS a prerequisite for having any
+# routing at all. It is opt-in and lives in traefik-crowdsec-config.yaml; apply that one too when you turn
+# infra.routing.crowdsec.enabled on.
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -22,46 +27,8 @@ spec:
         allowCrossNamespace: true
     experimental:
       plugins:
-        # Each plugin name must match the spec.plugin.<name> used by the chart's Middlewares. Pin to a real release
-        # (check the plugin's GitHub releases for the current version).
-        # WAF (waf): OWASP CRS via Coraza. Enable with infra.routing.waf.enabled=true.
+        # The plugin name must match the spec.plugin.<name> the chart's Middlewares use. Pin to a real
+        # release (check the plugin's GitHub releases for the current version).
         coraza:
-          moduleName: github.com/jcchavezs/coraza-http-wasm-traefik
-          version: v0.3.0
-        # Bot / AI-scraper defense (bot-defense). Enable with infra.routing.botDefense.enabled=true.
-        # botwrangler:
-        #   moduleName: github.com/<org>/bot-wrangler-traefik-plugin
-        #   version: v0.x.y
-        # Behavioural IPS bouncer (crowdsec). Enable with infra.routing.crowdsec.enabled=true AND the infra.crowdsec
-        # LAPI component. The plugin name "crowdsec" must match the chart's crowdsec Middleware (spec.plugin.crowdsec).
-        crowdsec:
-          moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
-          version: v1.8.1
-    # CrowdSec needs Traefik's access log to decide bans. Emit it as JSON to a file on the node; the CrowdSec agent
-    # mounts the SAME host path (infra.crowdsec.accessLogHostPath, default /var/log/traefik) and acquires this file.
-    # Required only when CrowdSec is enabled; harmless otherwise. (Access logs are not sent to Loki - keep them local.)
-    logs:
-      access:
-        enabled: true
-        format: json
-        filePath: /var/log/traefik/access.log
-    # Share the access-log directory with the node (so the CrowdSec agent pod can read it) and mount the bouncer API
-    # key for the plugin's crowdsecLapiKeyFile (infra.routing.crowdsec.apiKeyFile, default /etc/traefik/crowdsec/
-    # api-key). The key comes from a Secret `crowdsec-bouncer` (key `api-key`) that MUST exist in kube-system - the
-    # chart cannot create it here, and the key is never written into any manifest. Verify these value keys against
-    # your Traefik chart version (k3s bundles the official Traefik chart).
-    deployment:
-      additionalVolumes:
-        - name: crowdsec-access-log
-          hostPath:
-            path: /var/log/traefik
-            type: DirectoryOrCreate
-        - name: crowdsec-bouncer-key
-          secret:
-            secretName: crowdsec-bouncer
-    additionalVolumeMounts:
-      - name: crowdsec-access-log
-        mountPath: /var/log/traefik
-      - name: crowdsec-bouncer-key
-        mountPath: /etc/traefik/crowdsec
-        readOnly: true
+          moduleName: github.com/jptosso/coraza-traefik
+          version: v0.2.2

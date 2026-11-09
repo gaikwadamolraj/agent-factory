@@ -38,4 +38,20 @@ metadata:
   {{- include "ats.infraMetadata" (dict "root" $ "name" "grafana-dashboards" "appName" "lgtm") | nindent 2 }}
 data:
   {{- toYaml $dashboards | nindent 2 }}
+---
+{{- /* Retention. The otel-lgtm image runs Prometheus with no retention flag, Loki with no compactor and Tempo
+       with its 14-day default, all on one emptyDir - so /data grows until the kubelet evicts the pod and the
+       whole observability stack goes down together. These three files replace the image's, keeping its own
+       settings and adding only the expiry, from infra.lgtm.retention. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  {{- include "ats.infraMetadata" (dict "root" $ "name" "lgtm-retention" "appName" "lgtm") | nindent 2 }}
+data:
+  {{- $retention := .Values.infra.lgtm.retention }}
+  {{- dict
+        "run-prometheus.sh" (.Files.Get "files/lgtm/run-prometheus.sh")
+        "loki-config.yaml" (.Files.Get "files/lgtm/loki-config.yaml" | replace "RETENTION_PERIOD_PLACEHOLDER" $retention)
+        "tempo-config.yaml" (.Files.Get "files/lgtm/tempo-config.yaml" | replace "RETENTION_PERIOD_PLACEHOLDER" $retention)
+      | toYaml | nindent 2 }}
 {{- end }}

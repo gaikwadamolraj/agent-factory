@@ -26,15 +26,17 @@ kubectl -n kube-system rollout status deploy/traefik
 ```
 
 It enables (1) `allowCrossNamespace` — the IngressRoutes live in `agent-infra` but point at Services in
-`agent-factory`; without it Traefik refuses the reference and the UIs return 404 — (2) the **Coraza WAF plugin**
-used by the `waf` Middleware when `infra.routing.waf.enabled=true` — and (3) the **CrowdSec bouncer plugin**, a **JSON
-access log to a node file**, and the **volume mounts** CrowdSec needs (the access-log `hostPath` and the
-`crowdsec-bouncer` key Secret), used when `infra.routing.crowdsec.enabled=true` with the `infra.crowdsec` LAPI
-component. Re-apply this file (and roll Traefik) after turning CrowdSec on.
+`agent-factory`; without it Traefik refuses the reference, the routers never register, and the UIs 404 or fall
+through to whatever else claims the host — and (2) the **Coraza WAF plugin** used by the `waf` Middleware when
+`infra.routing.waf.enabled=true`.
 
-> CrowdSec also needs a **`crowdsec-bouncer` Secret** (key `api-key`) in **both** `kube-system` (for the plugin's key
-> file, mounted by this static config) and `agent-infra` (for the LAPI to register the bouncer). Neither is created by
-> the chart; the key is never rendered into a manifest. See docs/gateway_security.md §5c.
+**CrowdSec is deliberately a separate file** (`traefik-crowdsec-config.yaml`). Its volumes have a hard
+prerequisite: a **`crowdsec-bouncer` Secret** (key `api-key`) in **both** `kube-system` (the plugin's key file)
+and `agent-infra` (so the LAPI registers the bouncer). Neither is created by the chart and the key is never
+rendered into a manifest. When that Secret is missing the Traefik pod sits in `ContainerCreating` and the
+*whole host* loses its routing — which is why the behavioural IPS must not be a prerequisite for having any
+routing at all. Apply the CrowdSec file on top, after creating the Secret, only when turning CrowdSec on.
+See docs/gateway_security.md §5c.
 
 ## Security layers (see docs/gateway_security.md for the full rules and the AWS/Azure mapping)
 

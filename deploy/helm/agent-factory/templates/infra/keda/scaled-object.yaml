@@ -3,12 +3,18 @@
          Each block's `target` names the Deployment, which must set scaledByKeda so it omits spec.replicas and
          deploys never fight KEDA. Requires the KEDA operator (cluster add-on, not part of this chart; see
          README.md). Add a worker by copying a values block - no new template. */ -}}
+{{- /* A ScaledObject whose target Deployment does not exist can never become ready, and `helm --wait` then
+       fails the whole release - including the routing - however healthy everything else is. So the backend's
+       own `enabled` decides, and a scaled object is skipped when its worker is switched off. The block keys
+       here match the keys under `agents`/`services` on purpose: one switch per worker, not two that have to
+       be kept in agreement. */ -}}
 {{- $root := . -}}
 {{- with .Values.keda }}
 {{- if .enabled }}
 {{- $postgres := .postgres }}
 {{- range $name, $scaled := .scaledObjects }}
-{{- if $scaled.enabled }}
+{{- $backend := or (index (default (dict) $root.Values.agents) $name) (index (default (dict) $root.Values.services) $name) -}}
+{{- if and $scaled.enabled $backend $backend.enabled }}
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject

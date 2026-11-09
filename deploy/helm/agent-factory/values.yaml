@@ -16,6 +16,9 @@
 global:
   # app.kubernetes.io/part-of label on every object of the release namespace.
   partOf: agent-factory
+  # Log level of every backend at once (empty = each service's own LOG_LEVEL). Dev sets DEBUG; raising it
+  # multiplies what Loki stores, so keep infra.lgtm.retention short wherever this is on.
+  logLevel: ""
   image:
     # Registry/prefix of the ATS images, e.g. registry.example.com/ats. Empty = local images (k3d import).
     registry: ""
@@ -304,10 +307,19 @@ infra:
     middlewares:
       enabled: true
       referrerPolicy: strict-origin-when-cross-origin
-      # CSP that allows Next.js inline scripts and blob previews (also used for Grafana).
+      # CSP for the application routes: allows Next.js inline scripts and blob previews, nothing more.
       contentSecurityPolicy: >-
         default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
         img-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; object-src 'self' blob:
+      # Grafana's own CSP. It compiles WebAssembly (the Loki/trace query editors), which the policy above
+      # blocks outright - the browser reports "Compiling or instantiating WebAssembly module violates the
+      # following Content Security policy directive". `wasm-unsafe-eval` is the narrow fix: it permits
+      # WebAssembly compilation *without* allowing eval(), which plain `unsafe-eval` would. Kept separate so
+      # the application routes stay tight - only the observability UI needs this.
+      grafanaContentSecurityPolicy: >-
+        default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';
+        style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self';
+        frame-src 'self' blob:; object-src 'self' blob:; worker-src 'self' blob:
       # Proxies in front of Traefik (client IP = depth-th address from the right of X-Forwarded-For).
       ipStrategyDepth: 2
       rateLimits:
@@ -455,6 +467,9 @@ infra:
     enabled: true
     image: grafana/otel-lgtm:0.8.1
     dataSizeLimit: 2Gi
+    # How long metrics, logs and traces are kept. All three live on the same emptyDir, so this is what stops
+    # /data filling up and the kubelet evicting the pod; shorten it when a deployment logs at DEBUG.
+    retention: 168h
     # Grafana under /grafana on infra.routing.host: Ingress + middlewares in the infra namespace (off in the base).
     route:
       enabled: false
@@ -1102,6 +1117,11 @@ agents:
       REDIS_DB: "0"                     # the semantic cache (vector search) only works in database 0
       WORKER_CONCURRENCY: "1"
       WORKER_LEASE_S: "4200"
+      # Extraction returns a large nested JSON graph, so it gets its own output budget rather than sharing
+      # chat's LLM_MAX_OUTPUT_TOKENS (4096) - at that size the model stops mid-structure and the JSON will
+      # not parse, which shows up as KNW-INT-0001 and an episode that never reaches the graph. Bounded by the
+      # backend's context window: if the model cannot produce this much, narrow the ontology instead.
+      EXTRACTION_MAX_OUTPUT_TOKENS: "16384"
       WORKER_MAX_ATTEMPTS: "3"
       # The onboarding worker may only add episodes: it never reads, searches or forgets another run's knowledge.
       ALLOWED_CALLERS: "ats-orchestrator,ats-orchestrator-onboarding"

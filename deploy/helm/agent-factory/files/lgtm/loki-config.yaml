@@ -1,0 +1,43 @@
+# The image's own loki-config.yaml plus retention. Without a compactor Loki keeps every chunk for ever and a
+# debug-level deployment fills /data in hours. retention_period is substituted from infra.lgtm.retention.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /data/loki
+  storage:
+    filesystem:
+      chunks_directory: /data/loki/chunks
+      rules_directory: /data/loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# Deleting expired chunks is the compactor's job and it is off by default.
+compactor:
+  working_directory: /data/loki/compactor
+  delete_request_store: filesystem
+  retention_enabled: true
+  retention_delete_delay: 1h
+  compaction_interval: 10m
+
+limits_config:
+  retention_period: RETENTION_PERIOD_PLACEHOLDER
+  reject_old_samples: true
+  reject_old_samples_max_age: RETENTION_PERIOD_PLACEHOLDER
+
+ruler:
+  alertmanager_url: http://localhost:9093

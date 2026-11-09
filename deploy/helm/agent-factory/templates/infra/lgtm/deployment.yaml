@@ -36,11 +36,22 @@ spec:
             - configMapRef:
                 name: grafana-settings
           env:   # Grafana logins (optional keys; without an admin password the admin sign-in stays locked)
+            - name: RETENTION_PERIOD        # read by the replaced run-prometheus.sh
+              value: {{ .retention | quote }}
             {{- include "ats.env" (dict "root" $ "env" .env) | nindent 12 }}
           volumeMounts:
             - name: start
               mountPath: /otel-lgtm/run-grafana.sh
               subPath: run-grafana.sh
+            - name: retention
+              mountPath: /otel-lgtm/run-prometheus.sh
+              subPath: run-prometheus.sh
+            - name: retention
+              mountPath: /otel-lgtm/loki-config.yaml
+              subPath: loki-config.yaml
+            - name: retention
+              mountPath: /otel-lgtm/tempo-config.yaml
+              subPath: tempo-config.yaml
             - name: provisioning
               mountPath: /otel-lgtm/grafana/conf/provisioning/dashboards/agent-factory.yaml
               subPath: agent-factory.yaml
@@ -60,6 +71,10 @@ spec:
         - name: start
           configMap:
             name: grafana-start
+            defaultMode: 0755
+        - name: retention
+          configMap:
+            name: lgtm-retention
             defaultMode: 0755
         - name: provisioning
           configMap:

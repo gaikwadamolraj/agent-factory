@@ -7,7 +7,11 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "sqlmodel>=0.0.22",
-    "sqlalchemy[asyncio]>=2.0.30",
+    # Pinned below 2.1: opentelemetry-instrumentation-sqlalchemy declares sqlalchemy<2.1.0 and silently skips
+    # instrumenting anything newer, so every service logs a version warning at startup and loses its database
+    # spans. Tracing a slow query matters more than being on the newest minor. Raise the ceiling when the
+    # instrumentation supports 2.1.
+    "sqlalchemy[asyncio]>=2.0.30,<2.1",
     "asyncpg>=0.29",
     "psycopg[binary]>=3.2",
     "redis>=5.0.3",

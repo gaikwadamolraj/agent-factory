@@ -68,6 +68,10 @@ class AgentService:
                                                          settings.memory_ttl_seconds, settings.app_env)
         self._registry = self._build_registry_source(settings)
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # In-flight screenings by request id, so `cancel` can reach the task. Must be created here: it used
+        # to sit after the `return` in _build_registry_source, where it never ran, and every screening then
+        # failed with AttributeError the moment it tried to register itself.
+        self._running: dict[str, asyncio.Task] = {}
 
     def _build_registry_source(self, settings: AgentSettings) -> Optional[RegistrySkillSource]:
         """The registry-backed skill source, or None when this deployment runs packaged skills only.
@@ -80,7 +84,6 @@ class AgentService:
         target = build_skill_registry_target(settings.registry_mcp_url, settings.registry_timeout_s)
         return RegistrySkillSource(target, build_service_token_provider(settings), self.cache, settings.app_env,
                                    max_entries=settings.registry_cache_entries)
-        self._running: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------ validation / registry
     def _validate(self, tenant: Tenant, request_id: str, **texts: tuple[str, int]) -> None:

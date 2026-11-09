@@ -292,6 +292,8 @@ services:
       <<: *knowledge-env
       SERVICE_NAME: agent-knowledge-graph-worker
       WORKER_CONCURRENCY: "1"
+      # Extraction returns a large nested JSON graph; chat's 4096-token budget truncates it mid-structure.
+      EXTRACTION_MAX_OUTPUT_TOKENS: "16384"
     extra_hosts: *host-gateway
     depends_on:
       - agent-knowledge-graph

@@ -16,14 +16,14 @@
       "kind": "graded",
       "key": "insuring_clauses",
       "points": 70,
-      "select": { "attributes": { "clause_type": ["insuring"] } },
+      "select": { "attributes": { "kind": ["coverage"] } },
       "fallbackToAll": true
     },
     {
       "kind": "graded",
       "key": "conditions",
       "points": 20,
-      "select": { "attributes": { "clause_type": ["condition"] } },
+      "select": { "attributes": { "kind": ["condition"] } },
       "fallbackComponent": "insuring_clauses"
     },
     {
@@ -53,7 +53,7 @@
       "maxScore": 0,
       "grades": ["excluded"],
       "minFraction": 0.0,
-      "select": { "attributes": { "clause_type": ["exclusion"] } },
+      "select": { "attributes": { "kind": ["exclusion"] } },
       "reason": "an exclusion applies: {names}"
     },
     {
@@ -61,7 +61,7 @@
       "maxScore": 25,
       "grades": ["excluded", "insufficient_evidence"],
       "minFraction": 0.0,
-      "select": { "attributes": { "clause_type": ["condition"], "precedent": ["true"] } },
+      "select": { "attributes": { "kind": ["condition"], "precedent": ["true"] } },
       "reason": "a condition precedent to liability is not satisfied: {names}"
     },
     {
@@ -69,7 +69,7 @@
       "maxScore": 40,
       "grades": ["excluded", "insufficient_evidence", "not_applicable"],
       "minFraction": 1.0,
-      "select": { "attributes": { "clause_type": ["insuring"] } },
+      "select": { "attributes": { "kind": ["coverage"] } },
       "reason": "no insuring clause responds to this loss"
     }
   ],
