@@ -42,6 +42,19 @@ class KnowledgeSettings(McpServiceSettings):
     max_text_chars: int = 100_000
     max_answer_facts: int = 25
 
+    # Extraction's own output budget, separate from the platform's LLM_MAX_OUTPUT_TOKENS.
+    #
+    # They are different workloads. A chat reply is a few hundred tokens; extracting a graph from a resume is
+    # a large nested JSON document - entities, relations and attributes - and 4096 tokens does not hold one.
+    # When the budget runs out the model stops mid-structure and the JSON will not parse, which surfaces as
+    # `KNW-INT-0001` after three identical attempts and an episode that never reaches the graph. Sharing one
+    # number with chat means the smaller workload sets the ceiling for the larger one.
+    #
+    # Raising it is bounded by the *backend's* context window: ask for more than the model can produce and it
+    # either refuses the request or truncates anyway. If the backend cannot go higher, reduce what is asked
+    # for instead - a narrower ontology, or a smaller `max_text_chars` - rather than retrying into the same wall.
+    extraction_max_output_tokens: int = 16_384
+
     # Zero trust (allowed_callers, tool_policy come from McpServiceSettings)
     allowed_callers: str = "ats-orchestrator"
     tool_policy: str = ("ats-orchestrator=ingest_episode|get_episode|search_knowledge|forget_source|"

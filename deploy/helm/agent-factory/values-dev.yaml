@@ -5,18 +5,30 @@ global:
   image:
     registry: ""
     tag: dev
+  # Every backend at DEBUG on dev. This is why infra.lgtm.retention below is one day: DEBUG multiplies what
+  # Loki stores, and metrics, logs and traces share one 2Gi emptyDir in the LGTM pod.
+  logLevel: DEBUG
 
 keda:
   enabled: true      # ./deploy.sh installs the KEDA operator when it is missing
 
 infra:
   lgtm:
+    retention: 24h   # one day of metrics, logs and traces; enough to debug yesterday, small enough not to evict the pod
     route:
       enabled: true  # Grafana under /grafana
+  postgres:
+    # The KEDA operator queries Postgres to size the workers, and on this cluster it runs in its own `keda`
+    # namespace rather than in agent-infra. Without it listed here k3s rejects the connection outright, the
+    # ScaledObject never becomes ready, and `helm --wait` fails the whole release - routing included.
+    extraClientNamespaces:
+      - agent-infra
+      - keda
 
 schema:
   config:
     SEED_DEMO_DATA: "true"           # demo tenants / users
+    LOG_LEVEL: "DEBUG"               # the migration job is not a backend, so global.logLevel does not reach it
 
 services:
   authService:
@@ -26,7 +38,15 @@ services:
   atsUi:
     route:
       enabled: true
-  # Expose the admin console under /admin on the same host.
+  # Expose the admin console under /agent-factory on the same host.
   adminUi:
     route:
       enabled: true
+      # The base chart exposes the admin console on websecure only, because it shows run arguments and
+      # results across every tenant. Dev adds plain web as well: the CDN in front of this host terminates
+      # TLS and may reach the origin over http, and a route that only listens on websecure then never
+      # matches at all - it falls through to whatever owns `/` and looks like "no service available".
+      # Keep this override out of values-prod.yaml.
+      entryPoints:
+        - web
+        - websecure

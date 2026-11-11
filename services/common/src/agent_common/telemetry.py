@@ -3,7 +3,6 @@
 Call `setup_observability(settings)` once at startup; it configures logging too. With `otel_enabled=False` only
 console logging is configured and the OTEL API stays a no-op.
 """
-import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -68,7 +67,10 @@ def setup_observability(settings: CommonSettings) -> Observability:
     logger_provider = LoggerProvider(resource=resource)
     logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=f"{endpoint}/v1/logs")))
     set_logger_provider(logger_provider)
-    otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+    # Same level as the console handler, so what a developer sees with `kubectl logs` is what Grafana has. A
+    # hard-coded floor here made LOG_LEVEL=DEBUG look broken: the lines were in the container and nowhere else.
+    # DEBUG multiplies what Loki stores, so keep infra.lgtm.retention short wherever it is on.
+    otel_handler = LoggingHandler(level=settings.log_level.upper(), logger_provider=logger_provider)
 
     setup_logging(settings.service_name, settings.app_env, settings.log_level, settings.log_json, [otel_handler])
     _instrument_clients()

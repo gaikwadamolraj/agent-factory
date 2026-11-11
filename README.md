@@ -1,63 +1,123 @@
 # agent-factory
 
-Profile skill vs JD: a multi-tenant recruiter chat assistant that screens resumes against job descriptions for
-**any industry**. Coding agents: read [CLAUDE.md](CLAUDE.md) first.
+A multi-tenant platform for domain agents. The first domain is recruitment (screen a resume against a JD), but
+nothing in the engine knows about recruitment: what an industry means lives in a **domain pack** (`packs/<domain>/`)
+and in versioned skills, so insurance or banking is a pack, not a fork. Coding agents: read [CLAUDE.md](CLAUDE.md)
+first.
 
 Architecture, service names and namespaces: **[docs/platform.md](docs/platform.md)**.
+Animated walk-through of every flow: **[the flow diagrams](https://claude.ai/artifact/LryPdTHKYdvNihhfDJqQfx)**.
 
 ```
-browser ─► Traefik ─► ats-ui (proxy /ats/api/backend)
-                          ├─► auth-service            login / refresh / users; JWKS + service tokens for services
-                          └─► ats-orchestrator ──MCP──► agent-skill (skills: ATS screening)
-                                                     ├─MCP──► agent-compute ──► agent-sandbox
-                                                     ├─MCP──► agent-knowledge-graph ◄── agent-knowledge-graph-worker
-                                                     └─MCP──► agent-guardrail
-  infra (namespace agent-infra): postgres, redis, falkordb, llm-gateway (LiteLLM), lgtm (Grafana)
+browser ─► Traefik ─► ats-ui    (/ats)            recruiter chat
+                   ├─► admin-ui (/agent-factory)  skills, versions, packs, tool catalogue
+                   ├─► auth-service            login / refresh / users; JWKS + service tokens
+                   └─► ats-orchestrator ──MCP──► agent-skill (runs a skill: ATS screening)
+                                              ├─MCP──► agent-document (extract: fast / tables / docling)
+                                              ├─MCP──► agent-compute ──► agent-sandbox
+                                              ├─MCP──► agent-knowledge-graph ◄── agent-knowledge-graph-worker
+                                              ├─MCP──► agent-guardrail
+                                              └─HTTP─► registry-service (skills, packs, prompts)
+  infra (namespace agent-infra): postgres, redis, falkordb, llm-gateway (LiteLLM), lgtm (Grafana), temporal
 ```
 
 | Path | What it is |
 |---|---|
-| [services/common](services/common) | Shared lib `agent_common`: config, logging + OTEL, errors, resilience, Redis keys, auth, tenant tables, middlewares, LLM, agent clients |
-| [services/platform/schema](services/platform/schema) | Database: creates `ats_platform`, Alembic migration, demo seed (Helm hook Job) |
+| [services/common](services/common) | Shared lib `agent_common`: config, logging + OTEL, errors, resilience, Redis keys, auth, tenant tables, middlewares, LLM, packs, rubrics/scoring, grounding, agent clients |
+| [services/platform/schema](services/platform/schema) | Database: creates `ats_platform`, Alembic migrations, RLS policies, demo seed (Helm hook Job) |
 | [services/platform/auth-service](services/platform/auth-service) | Login, refresh, logout, user management, user + service tokens (ES256), JWKS |
-| [services/ats/ats-orchestrator](services/ats/ats-orchestrator) | ATS API `/api/v1`: chats, documents, screenings, SSE turns, abort, LangGraph assistant |
+| [services/platform/registry-service](services/platform/registry-service) | Registry of skills, skill versions, domain packs and the tool catalogue |
+| [services/platform/admin-ui](services/platform/admin-ui) | Admin console (`/agent-factory`): publish a skill version, load a pack, inspect runs |
+| [services/ats/ats-orchestrator](services/ats/ats-orchestrator) | ATS API `/api/v1`: chats, documents, screenings, SSE turns, abort, bulk match, workflow runs (Temporal) |
+| [services/ats/ats-ui](services/ats/ats-ui) | Next.js recruiter UI (`/ats`) |
 | [services/agents/agent-skill](services/agents/agent-skill) | Runs skills (Strands); ATS screening is a skill |
+| [services/agents/agent-document](services/agents/agent-document) | Document extraction; probes each file and picks a tier (pypdfium2 / pdfplumber / Docling+OCR) |
 | [services/agents/agent-compute](services/agents/agent-compute), [services/agents/agent-sandbox](services/agents/agent-sandbox) | Runs agent-written code in an isolated sandbox |
 | [services/agents/agent-knowledge-graph](services/agents/agent-knowledge-graph) | Knowledge graph per tenant (Graphiti + FalkorDB) behind MCP, plus the extraction worker |
 | [services/agents/agent-guardrail](services/agents/agent-guardrail) | Prompt-injection check for any untrusted text (NeMo rail + classifier) |
-| [services/ats/ats-ui](services/ats/ats-ui) | Next.js UI (`ats-ui`) |
+| [packs](packs) | Domain packs (data only, nothing executable): entity schemas, rubrics, ontology, prompts - `ats/`, `insurance/` |
 | [deploy](deploy) | Helm chart `deploy/helm/agent-factory` (namespaces `agent-factory` + `agent-infra`), deployed with `./deploy.sh` |
-| [docs](docs) | [platform.md](docs/platform.md) (start here), [access_and_onboarding.md](docs/access_and_onboarding.md), [local_llm.md](docs/local_llm.md), [llm_gateway.md](docs/llm_gateway.md), [security_auth.md](docs/security_auth.md), [security_llm.md](docs/security_llm.md), [impl_agent_platform.md](docs/impl_agent_platform.md) (skills, workflow runs, artifacts), knowledge graph [basics](docs/knowledge_graph_basics.md) / [ontology guide](docs/knowledge_ontology_guide.md), [KEDA](docs/keda_autoscaling.md), `impl_*.md` for complex flows - not shipped in images |
+| [docs](docs) | [platform.md](docs/platform.md) (start here), [access_and_onboarding.md](docs/access_and_onboarding.md), [local_llm.md](docs/local_llm.md), [llm_gateway.md](docs/llm_gateway.md), [security_auth.md](docs/security_auth.md), [security_llm.md](docs/security_llm.md), [screening_walkthrough.md](docs/screening_walkthrough.md) (what calls what, end to end), [logs_guide.md](docs/logs_guide.md), [temporal_ui.md](docs/temporal_ui.md), knowledge graph [basics](docs/knowledge_graph_basics.md) / [ontology guide](docs/knowledge_ontology_guide.md), [KEDA](docs/keda_autoscaling.md), `impl_*.md` for complex flows - not shipped in images |
 
-## Run locally
+## Run locally (docker compose)
 
 ```bash
-lms server start --bind 0.0.0.0 --port 1235             # LM Studio, reachable from containers
+# 1. A model the containers can reach. LM Studio binds to 0.0.0.0 so compose can see it.
+lms server start --bind 0.0.0.0 --port 1235
 lms load qwen3-30b-a3b-instruct-2507 --gpu max -c 65536 --parallel 4 --ttl 86400 -y
 lms load text-embedding-nomic-embed-text-v1.5@q8_0 --ttl 86400 -y
-./scripts/local_env.sh                                  # creates .env with generated keys (never commit .env)
+
+# 2. Secrets. Writes .env with freshly generated keys - never commit it (.env.example is the committed one).
+./scripts/local_env.sh
+
+# 3. Up. The schema container runs the migrations and the demo seed before the services start.
 docker compose up --build
 ```
-UI http://localhost:3000/ats (users `acme.recruiter`, `acme.admin`, `globex.recruiter`, password `Demo@12345`),
-admin console http://localhost:3002/agent-factory (skills, versions, domain packs, tool catalogue; admin role),
-Grafana http://localhost:3001/grafana. Model setup and pitfalls: [docs/local_llm.md](docs/local_llm.md).
+
+| | |
+|---|---|
+| Recruiter UI | http://localhost:3000/ats |
+| Admin console | http://localhost:3002/agent-factory (admin role: skills, versions, packs, tools) |
+| Grafana | http://localhost:3001/grafana |
+| Demo logins | `acme.recruiter`, `acme.admin`, `globex.recruiter` - password `Demo@12345` |
+
+Model setup and pitfalls: [docs/local_llm.md](docs/local_llm.md).
+If the schema container fails with `Can't locate revision ...`, the `pgdata` volume predates the current
+migration chain: `docker compose down && docker volume rm ats-platform_pgdata && docker compose up --build`
+(this deletes local data - take `docker compose exec postgres pg_dumpall -U postgres > dump.sql` first).
 
 ## Deploy to k3d
 
 ```bash
-./deploy.sh init --generate-secrets   # once: namespaces, generated keys, list of the other Secret keys
-./deploy.sh                 # build all images, helm upgrade --install (infra in agent-infra, services in agent-factory)
+# 1. Once per machine: namespaces, generated keys, and the local image registry (dev only).
+./deploy.sh init --generate-secrets
+
+# 2. Check the machine before deploying: tools, cluster, secrets, images, gateway, chart.
+./deploy.sh doctor
+
+# 3. Build every image and deploy.
+./deploy.sh
 ```
-Details, secret keys and access: [deploy/README.md](deploy/README.md).
+
+Day to day you rarely want step 3:
+
+| Command | What it does |
+|---|---|
+| `./deploy.sh` | build **all** images, then `helm upgrade --install` |
+| `./deploy.sh agent-skill` | build **one** service's image and deploy - the usual inner loop |
+| `./deploy.sh agent-skill ats-ui` | build those two and deploy |
+| `./deploy.sh apply` | **no build at all**: deploy the chart as it stands (values, routes, config changes) |
+| `./deploy.sh doctor` | preflight only, changes nothing; exits non-zero when something is wrong |
+| `./deploy.sh keda` | install the KEDA operator (a normal deploy does this when it is missing) |
+| `ENV=stage ./deploy.sh` | another environment; needs `values-stage.yaml` and `REGISTRY` set |
+
+Images: in dev `./deploy.sh` pushes to the local registry `agent-factory-registry:5000` when it is running and
+trusted by the cluster (that is what `init` sets up), and falls back to `k3d image import` when it is not - set
+`REGISTRY=none` to force the fallback. Deploying is **only** ever `./deploy.sh`; `kubectl apply` of the rendered
+chart leaves placeholder image tags behind.
+
+Secret keys, routes and access: [deploy/README.md](deploy/README.md).
 
 ## Demo script
 
 1. Sign in as `acme.recruiter`, pick the **Engineering hiring** project, press **New chat**.
 2. Paste a JD, attach a resume PDF, press **Screen candidate**: the timeline shows each agent step live.
+   What actually happens between those steps: [docs/screening_walkthrough.md](docs/screening_walkthrough.md).
 3. Ask follow-ups ("Which must-haves are missing?", "What should I ask about X?").
 4. Start another screening and press **Stop**: the turn ends at once and the agent's LLM call is cancelled.
-5. Open Grafana → Dashboards → ATS → **ATS Platform Overview**: active users, who did what, latency, LLM calls, aborts, errors by code.
-6. Sign in as `globex.recruiter`: Acme's chats are invisible (tenant isolation).
+5. Open the admin console at `/agent-factory`: the skill, its published versions and the domain packs. With
+   nothing published the platform runs its packaged defaults, which is why screening works on a fresh database.
+6. Grafana → Dashboards → ATS → **ATS Platform Overview**: active users, latency, LLM calls, aborts, errors by code.
+   Finding a specific failure: [docs/logs_guide.md](docs/logs_guide.md) - the log fields, the LogQL that works,
+   and tracing one request across services. Durable runs: [docs/temporal_ui.md](docs/temporal_ui.md).
+7. Sign in as `globex.recruiter`: Acme's chats are invisible (tenant isolation, enforced in the database by RLS).
+
+## Observability on dev
+
+Dev runs every backend at `DEBUG` (`global.logLevel` in `values-dev.yaml`) and therefore keeps only **24 hours**
+of metrics, logs and traces (`infra.lgtm.retention`). The three stores share one `emptyDir` in the LGTM pod, so
+without that expiry the disk fills and the kubelet evicts the pod, taking the whole observability stack with it.
+Raise `retention` the moment you move off `DEBUG`, and put the data on a PVC before relying on it.
 
 ## Error codes
 

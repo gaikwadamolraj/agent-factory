@@ -88,3 +88,43 @@ class RunOut(ApiResponse):
 class RunCancelOut(ApiResponse):
     id: str
     cancelled: bool
+
+
+class BulkMatchRequest(ApiModel):
+    """Start a bulk match: one job description against this project's candidates (J3).
+
+    The caller names the job description and the bounds it wants; everything else - the pack, the task
+    queue, the grading concurrency - is server-side policy, because a client must not be able to raise the
+    platform's ceiling on LLM work.
+    """
+
+    jd_document_id: int = Field(gt=0)
+    top_n: Optional[int] = Field(default=None, gt=0, le=500)
+    max_subjects: Optional[int] = Field(default=None, gt=0, le=5000)
+
+
+class BulkMatchStartedOut(ApiResponse):
+    """What the caller needs to follow the run it just started (or reattached to)."""
+
+    id: str                    # the run's public id; poll GET /runs/{id}
+    status: str
+    reattached: bool           # True when an equivalent run already existed and nothing new was started
+
+
+class MatchResultOut(ApiResponse):
+    """One subject's place in a match run - a row of the shortlist.
+
+    References and small values only: the grades and the rubric's component points explain the score
+    without re-running anything, and nothing here carries document content.
+    """
+
+    subject_id: int
+    subject_ref: str
+    display_name: str
+    rank: Optional[int] = None
+    score: Optional[float] = None
+    band: str = ""
+    recommendation: str = ""
+    grades: dict[str, Any] = {}
+    breakdown: dict[str, Any] = {}
+    error_code: Optional[str] = None

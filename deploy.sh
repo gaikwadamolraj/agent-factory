@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the ATS images and deploy the platform with Helm (chart deploy/helm/agent-factory, release "ats").
 #
+#   ./deploy.sh doctor                    # check what a deploy needs on this machine and say what is missing
 #   ./deploy.sh init                      # once per cluster: create namespaces agent-factory + agent-infra,
 #                                         #   print the Secret keys to create (and which are missing)
 #   ./deploy.sh init --generate-secrets   # same, then create the missing GENERATED keys (signing key, client
@@ -13,9 +14,12 @@
 #   ./deploy.sh migrate-to-helm [--dry-run]   # one-time switch from the old kustomize objects (see script)
 #   ENV=prod REGISTRY=registry.example.com/ats ./deploy.sh ...   # values-prod.yaml, push to REGISTRY
 #
-# Local registry (dev, optional but much faster than `k3d image import`): see scripts/local_registry.sh, then
-#   source scripts/local_registry.sh   # sets REGISTRY + REGISTRY_PULL for this shell
-#   ./deploy.sh agent-skill            # builds and pushes one image, deploys, leaves the rest alone
+# Local registry (dev): used AUTOMATICALLY when it is set up and the cluster can pull from it, which is much
+# faster than `k3d image import`. One-time setup, then nothing to remember:
+#   ./scripts/local_registry.sh        # creates it, joins the k3d network, trusts it on every node
+#   ./deploy.sh agent-skill            # detects it, pushes one image, deploys, leaves the rest alone
+# Falls back to `k3d image import` whenever it is missing or the cluster cannot pull from it.
+# REGISTRY=none forces the import path.
 #
 # Components (= image names; grouped under services/<group>/<component>, see service_dir):
 #   auth-service ats-orchestrator agent-skill agent-compute agent-sandbox agent-knowledge-graph agent-guardrail
@@ -38,12 +42,15 @@ INFRA_SECRET="agent-infra-secrets"
 KEDA_CHART_VERSION="2.20.2"
 ENV="${ENV:-dev}"
 CLUSTER_NAME="${CLUSTER_NAME:-my-cluster}"
-# Where images are pushed, and where the cluster pulls them from. They differ when the registry is reachable
-# from the host and the cluster under different names - a local k3d registry is `localhost:5000` to docker on
-# this machine and `agent-factory-registry:5000` inside the cluster network. Leave both empty to skip the
-# registry entirely and use `k3d image import`, which needs no setup but copies every image on every build.
+# Where images are pushed, and where the cluster pulls them from. The two differ because the same registry
+# has two names: `localhost:5000` to docker on this machine, `agent-factory-registry:5000` inside the k3d
+# network. Leave both unset in dev and the registry is detected automatically (see use_local_registry);
+# `REGISTRY=none` forces the `k3d image import` path, which needs no setup but copies every image into
+# every node on every build.
 REGISTRY="${REGISTRY:-}"
 REGISTRY_PULL="${REGISTRY_PULL:-$REGISTRY}"
+LOCAL_REGISTRY_NAME="${LOCAL_REGISTRY_NAME:-agent-factory-registry}"
+LOCAL_REGISTRY_PORT="${LOCAL_REGISTRY_PORT:-5000}"
 TAG="${IMAGE_TAG:-$(date +%Y%m%d-%H%M%S)}"
 
 COMPONENTS=(auth-service ats-orchestrator agent-skill agent-compute agent-sandbox agent-knowledge-graph agent-guardrail
@@ -230,6 +237,150 @@ generate_missing_secrets() {  # create only the missing generated keys of agent-
   if [[ ${#created[@]} -gt 0 ]]; then log "generated: ${created[*]}"; else log "all generated keys already exist"; fi
 }
 
+# ------------------------------------------------------------------------------------------- registry
+use_local_registry() {  # in dev with no REGISTRY set: use the local registry when it is genuinely usable
+  # Three things must hold, and all three are checked rather than assumed. A registry that this machine can
+  # push to but the cluster cannot pull from is worse than no registry at all: every build would succeed and
+  # every pod would then sit in ImagePullBackOff. When any check fails we fall back to `k3d image import`,
+  # which always works, so a half-set-up registry costs time rather than a broken deploy.
+  [[ "$ENV" == "dev" && -z "$REGISTRY" ]] || return 1
+  command -v docker >/dev/null || return 1
+
+  # 1. the registry answers on this machine
+  docker exec "$LOCAL_REGISTRY_NAME" true >/dev/null 2>&1 || return 1
+  # 2. it shares the cluster's docker network, so the nodes can resolve its name
+  docker inspect "$LOCAL_REGISTRY_NAME" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' \
+    2>/dev/null | grep -qw "k3d-${CLUSTER_NAME}" || return 1
+  # 3. containerd is configured to trust it over plain http (it only reads registries.yaml at start, so an
+  #    unconfigured node pulls over https, fails, and the deploy looks like a broken image)
+  local node
+  node="$(docker ps --format '{{.Names}}' | grep "^k3d-${CLUSTER_NAME}-" | grep -Ev 'serverlb|tools' | head -1)"
+  [[ -n "$node" ]] || return 1
+  docker exec "$node" sh -c "grep -q '${LOCAL_REGISTRY_NAME}:5000' /etc/rancher/k3s/registries.yaml 2>/dev/null" \
+    || return 1
+
+  REGISTRY="localhost:${LOCAL_REGISTRY_PORT}"
+  REGISTRY_PULL="${LOCAL_REGISTRY_NAME}:5000"
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------- preflight
+# Everything that has to be true *outside* the chart before a deploy works. These are host- and
+# cluster-level facts a Helm chart cannot assert about itself - containerd's registry trust is a file on the
+# node, read only at start, and Traefik's static config belongs to whoever installed Traefik. Each line here
+# is a failure this project has actually hit, so `doctor` is the cheapest way to find out why a new machine
+# behaves differently from this one.
+DOCTOR_PROBLEMS=0
+ok()    { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
+bad()   { printf '  \033[1;31m✗\033[0m %s\n' "$*"; DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1)); }
+note()  { printf '    %s\n' "$*"; }
+
+doctor() {
+  printf '\n\033[1mTools\033[0m\n'
+  local tool
+  for tool in docker kubectl helm; do
+    command -v "$tool" >/dev/null && ok "$tool" || bad "$tool is not installed"
+  done
+
+  printf '\n\033[1mCluster\033[0m\n'
+  if kubectl version >/dev/null 2>&1; then
+    ok "reachable ($(kubectl config current-context 2>/dev/null))"
+  else
+    bad "kubectl cannot reach a cluster"; note "k3d cluster create $CLUSTER_NAME"
+  fi
+  local namespace
+  for namespace in "$APP_NAMESPACE" "$INFRA_NAMESPACE"; do
+    kubectl get namespace "$namespace" >/dev/null 2>&1 \
+      && ok "namespace $namespace" || bad "namespace $namespace is missing   (./deploy.sh init)"
+  done
+  keda_installed && ok "KEDA operator" || bad "KEDA is missing   (./deploy.sh keda)"
+
+  printf '\n\033[1mSecrets\033[0m\n'
+  local key missing=0
+  for key in "${PLATFORM_SECRET_KEYS[@]}"; do
+    kubectl -n "$APP_NAMESPACE" get secret "$PLATFORM_SECRET" -o jsonpath="{.data.$key}" 2>/dev/null \
+      | grep -q . || missing=$((missing + 1))
+  done
+  [[ $missing -eq 0 ]] && ok "$PLATFORM_SECRET complete" \
+    || bad "$PLATFORM_SECRET is missing $missing key(s)   (./deploy.sh init --generate-secrets)"
+
+  printf '\n\033[1mImages\033[0m\n'
+  if [[ "$REGISTRY" == "none" ]]; then
+    ok "REGISTRY=none: k3d image import"
+  elif use_local_registry; then
+    ok "local registry $REGISTRY, cluster pulls $REGISTRY_PULL"
+  elif [[ -n "$REGISTRY" ]]; then
+    ok "registry $REGISTRY_PULL"
+  else
+    ok "no registry: k3d image import (slower)"
+    note "faster: ./scripts/local_registry.sh"
+    command -v k3d >/dev/null || bad "k3d is needed for the import path and is not installed"
+  fi
+
+  printf '\n\033[1mGateway\033[0m\n'
+  # The one that cost hours: without it Traefik refuses the chart's IngressRoutes (their Services live in
+  # another namespace), the routers never register, and requests fall through to whatever else owns the host.
+  if kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null \
+      | grep -q 'allowCrossNamespace=true'; then
+    ok "Traefik allows cross-namespace references"
+  else
+    bad "Traefik lacks --providers.kubernetescrd.allowCrossNamespace=true: the UI routes will not register"
+    note "kubectl apply -f deploy/review/amol-host/traefik-gateway-config.yaml"
+    note "kubectl -n kube-system rollout status deploy/traefik"
+  fi
+
+  printf '\n\033[1mChart\033[0m\n'
+  helm lint "$CHART" >/dev/null 2>&1 && ok "chart lints" || bad "helm lint failed on $CHART"
+  helm template "$RELEASE" "$CHART" -f "$CHART/values.yaml" -f "$CHART/values-$ENV.yaml" >/dev/null 2>&1 \
+    && ok "renders with values-$ENV.yaml" || bad "chart does not render with values-$ENV.yaml"
+
+  printf '\n'
+  if [[ $DOCTOR_PROBLEMS -eq 0 ]]; then
+    log "ready to deploy"
+  else
+    die "$DOCTOR_PROBLEMS problem(s) above"
+  fi
+}
+
+mirror_unbuilt_images() {  # arguments: the components built in this run
+  # Switching to a registry is all-or-nothing: `global.image.registry` prefixes EVERY component's image, so
+  # a component that was only ever `k3d image import`ed has no copy under that prefix and its pod lands in
+  # ImagePullBackOff - the schema hook first, which fails the whole release. The images already exist
+  # locally, so mirror them instead of forcing a full rebuild. A push whose layers are already in the
+  # registry is a fast no-op, which is why this runs unconditionally rather than probing first.
+  [[ -n "$REGISTRY" ]] || return 0
+  local built=("$@") component image tag
+  for component in "${COMPONENTS[@]}"; do
+    contains "$component" "${built[@]}" && continue
+    tag="$(running_tag "$component")"
+    [[ -n "$tag" ]] || continue                     # never deployed: collect_image_tag_args reports it
+    image="$(image_name "$component")"
+    docker image inspect "$REGISTRY/$image:$tag" >/dev/null 2>&1 && continue
+    if ! docker image inspect "$image:$tag" >/dev/null 2>&1; then
+      die "$component runs tag $tag, but neither $REGISTRY/$image:$tag nor a local $image:$tag exists.
+  Rebuild it so it can be pushed:  ./deploy.sh $component"
+    fi
+    log "mirroring $image:$tag into the registry"
+    docker tag "$image:$tag" "$REGISTRY/$image:$tag"
+    docker push "$REGISTRY/$image:$tag" >/dev/null
+  done
+}
+
+resolve_registry() {  # decide once, and say which path the build is taking
+  if [[ "$REGISTRY" == "none" ]]; then
+    log "REGISTRY=none: importing images into k3d"
+    REGISTRY="" REGISTRY_PULL=""
+    return
+  fi
+  if use_local_registry; then
+    log "local registry $REGISTRY (cluster pulls $REGISTRY_PULL)"
+  elif [[ -z "$REGISTRY" ]]; then
+    log "no usable registry: importing images into k3d (scripts/local_registry.sh sets one up)"
+  else
+    log "registry $REGISTRY_PULL"
+  fi
+}
+
 # ------------------------------------------------------------------------------------------------ build
 build_image() {  # build one component; dev: import into k3d, prod: push to REGISTRY
   local component="$1" image dir
@@ -302,10 +453,15 @@ namespace_owned_by_release() {
   [[ "$owner" == "$RELEASE" ]]
 }
 
-collect_ownership_args() {  # first install: adopt the namespaces created by `init` (and kubectl-applied fields)
+collect_ownership_args() {  # the chart owns its objects; reclaim fields that drifted away from it
+  # --force-conflicts on every deploy, not just the first. These are the chart's own objects, so a field
+  # changed by `kubectl edit` is drift, and a deploy is exactly when it should go back to what the chart
+  # says. Without it the whole release fails on one hand-edited field and nothing - including the routing -
+  # gets updated. Deliberate changes belong in values.yaml, which is also the only way they survive.
+  HELM_ARGS+=(--force-conflicts)
   if namespace_owned_by_release "$APP_NAMESPACE" && namespace_owned_by_release "$INFRA_NAMESPACE"; then return; fi
   log "first Helm install: adopting the existing namespaces (--take-ownership)"
-  HELM_ARGS+=(--take-ownership --force-conflicts)
+  HELM_ARGS+=(--take-ownership)
 }
 
 helm_deploy() {  # arguments: the components built in this run
@@ -348,8 +504,14 @@ main() {
   require_tools kubectl helm
 
   case "${1:-}" in
+    doctor) doctor; return ;;
     init)
       init_namespaces
+      # Build infrastructure, not platform infrastructure: the registry holds the images the chart deploys,
+      # so it cannot live in the chart. It is set up here instead, where a script can do the things a Helm
+      # hook cannot - join a docker network and write containerd's registries.yaml on each node.
+      [[ "$ENV" != "dev" ]] || bash "$ROOT/scripts/local_registry.sh" >/dev/null 2>&1 ||
+        log "local registry not set up (optional): ./scripts/local_registry.sh"
       if [[ "${2:-}" == "--generate-secrets" ]]; then generate_missing_secrets; fi
       print_secret_instructions
       return ;;
@@ -369,6 +531,7 @@ main() {
 
   refuse_old_kustomize_objects
   require_secrets
+  resolve_registry
   if [[ ${#components[@]} -gt 0 ]]; then
     require_tools docker
     # k3d is only needed for the import fallback; with a registry, docker push is all it takes.
@@ -376,6 +539,7 @@ main() {
     local component
     for component in "${components[@]}"; do build_image "$component"; done
   fi
+  mirror_unbuilt_images "${components[@]}"
   ensure_keda
   helm_deploy "${components[@]}"
 }

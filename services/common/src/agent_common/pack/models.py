@@ -139,6 +139,22 @@ class GuidanceSpec(ApiModel):
         return None if value is None else _check_path(value)
 
 
+class GuardrailsSpec(ApiModel):
+    """Where this industry's request-scope rules live (`agent_common.content_policy`).
+
+    The rules are data, exactly like the rest of the pack: which vocabulary is on-journey for this industry and
+    which topics it must never be asked about. Insurance and recruitment therefore block different things without
+    a code change, and the base rules (harmful requests, code generation) still apply to both.
+    """
+
+    policy_path: Optional[str] = None
+
+    @field_validator("policy_path")
+    @classmethod
+    def _validate_optional_path(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else _check_path(value)
+
+
 class ToolGrant(ApiModel):
     """Which tools of which MCP service this pack's journeys may call.
 
@@ -207,6 +223,7 @@ class PackDocument(ApiModel):
     rubrics: list[RubricSpec] = Field(default_factory=list, max_length=50)
     ontology: Optional[OntologySpec] = None
     guidance: GuidanceSpec = Field(default_factory=GuidanceSpec)
+    guardrails: GuardrailsSpec = Field(default_factory=GuardrailsSpec)
     prompts: dict[str, str] = Field(default_factory=dict)
     reports: dict[str, str] = Field(default_factory=dict)
     tools: list[ToolGrant] = Field(default_factory=list, max_length=50)
@@ -272,6 +289,8 @@ class PackDocument(ApiModel):
         if self.ontology is not None:
             paths.append(self.ontology.path)
         paths.extend(path for path in (self.guidance.ingest_path, self.guidance.answer_path) if path)
+        if self.guardrails.policy_path:
+            paths.append(self.guardrails.policy_path)
         paths.extend(self.prompts.values())
         paths.extend(self.reports.values())
         return paths

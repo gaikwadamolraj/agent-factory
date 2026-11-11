@@ -56,6 +56,18 @@ correction: "Accidental damage: covered -> insufficient_evidence (nothing in the
 **Not one line of `agent_common.rules` or `agent_common.match` was changed to make this work.** The engine
 never learns what an exclusion is; it matches an attribute and applies a cap.
 
+### The rubric selects on the pack schema's own words
+
+A defect worth recording, because it is the failure mode of splitting a pack across authors: the rubric
+originally selected on `clause_type: insuring | exclusion | condition`, while `criteria/coverage.schema.json`
+defines `kind: coverage | exclusion | condition | definition | limit | endorsement`. The engine selects
+purely on the attributes it is handed, so a mismatch is **silent** — every selector matches nothing, the
+components all score zero, and the result is a confident wrong number rather than an error.
+
+Fixed by making the rubric use the schema's field and vocabulary (`kind`, `coverage`), and the acceptance
+test now reads the allowed kinds **out of the schema** and refuses any clause kind the schema cannot
+produce. That guard caught the stale term on its first run.
+
 ## 4. Where insurance deliberately differs
 
 - **A decline is never automatic.** Every band's recommendation refers to a person, and the worst possible

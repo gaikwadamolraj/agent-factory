@@ -34,6 +34,9 @@
     "namespace": "talent",
     "path": "ontology.json"
   },
+  "guardrails": {
+    "policyPath": "guardrails/policy.json"
+  },
   "guidance": {
     "ingestPath": "guidance/ingest.md",
     "answerPath": "guidance/answer.md"

@@ -1,0 +1,49 @@
+# The image's own tempo-config.yaml plus block retention. Tempo's default is 336h (14 days) of trace blocks on a
+# 2Gi emptyDir. block_retention is substituted from infra.lgtm.retention.
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9096
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "localhost:4417"
+        http:
+          endpoint: "localhost:4418"
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /data/tempo/wal
+    local:
+      path: /data/tempo/blocks
+
+compactor:
+  compaction:
+    block_retention: RETENTION_PERIOD_PLACEHOLDER
+
+metrics_generator:
+  processor:
+    local_blocks:
+      filter_server_spans: false
+    span_metrics:
+      dimensions:
+        - service_name
+        - operation
+        - status_code
+  traces_storage:
+    path: /data/tempo/generator/traces
+  storage:
+    path: /data/tempo/generator/wal
+    remote_write:
+      - url: http://localhost:9090/api/v1/write
+        send_exemplars: true
+
+overrides:
+  metrics_generator_processors:
+    - service-graphs
+    - local-blocks
+    - span-metrics

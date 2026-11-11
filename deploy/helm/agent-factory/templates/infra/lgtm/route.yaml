@@ -15,7 +15,9 @@ spec:
     frameDeny: true
     browserXssFilter: true
     referrerPolicy: {{ $middlewares.referrerPolicy }}
-    contentSecurityPolicy: {{ $middlewares.contentSecurityPolicy | quote }}
+    {{- /* Grafana's own policy when the values supply one (it needs wasm-unsafe-eval for the query
+           editors); otherwise the shared application policy, so an older values file still renders. */}}
+    contentSecurityPolicy: {{ (default $middlewares.contentSecurityPolicy $middlewares.grafanaContentSecurityPolicy) | quote }}
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware

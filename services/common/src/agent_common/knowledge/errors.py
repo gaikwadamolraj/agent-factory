@@ -24,3 +24,6 @@ class KnowledgeErrors:
     EXTRACTION_FAILED = register("KNW-INT-0001", 500, "The text could not be turned into graph knowledge.",
                                  "Re-ingest later; if it keeps failing, use a larger model for extraction.",
                                  retryable=True)
+    EPISODE_TEXT_GONE = register("KNW-NFD-0003", 410, "This episode no longer holds the text it was created from.",
+                                 "Ingest the document again; an episode's text is dropped once it finishes or "
+                                 "finally fails, so the same episode cannot be re-run.")

@@ -9,18 +9,31 @@ from collections.abc import Iterable
 from typing import Optional
 
 from agent_common.llm import Purpose, gateway_client_args, get_llm_settings, model_for
+
+from agent_knowledge_graph.config import get_settings
 from agent_common.llm.embeddings import embed_text, embed_texts
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+from openai import AsyncOpenAI
 from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.llm_client.config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
 
+def extraction_output_budget() -> int:
+    """Tokens one extraction response may use - this service's own budget, not the platform chat budget.
+
+    Graph extraction returns a large nested JSON document; a chat reply returns a paragraph. Sizing both
+    from `LLM_MAX_OUTPUT_TOKENS` lets the smaller workload cap the larger one, and a truncated response is
+    not a short answer - it is unparseable JSON and a lost episode.
+    """
+    return get_settings().extraction_max_output_tokens
+
+
 def _llm_config(client_id: Optional[int]) -> LLMConfig:
-    args, settings = gateway_client_args(), get_llm_settings()
+    args = gateway_client_args()
     model = model_for(Purpose.EXTRACTION, client_id)
     return LLMConfig(api_key=args["api_key"], base_url=args["base_url"], model=model, small_model=model,
-                     temperature=0.0, max_tokens=settings.max_output_tokens)
+                     temperature=0.0, max_tokens=extraction_output_budget())
 
 
 class CappedOutputClient(OpenAIGenericClient):
@@ -38,8 +51,16 @@ class CappedOutputClient(OpenAIGenericClient):
 
 
 def extraction_llm(client_id: Optional[int]) -> OpenAIGenericClient:
-    """Graphiti LLM client for one client's graphs (its extraction alias), output capped (CappedOutputClient)."""
-    return CappedOutputClient(config=_llm_config(client_id), max_tokens=get_llm_settings().max_output_tokens)
+    """Graphiti LLM client for one client's graphs (its extraction alias), output capped (CappedOutputClient).
+
+    The HTTP client is **ours**, not one Graphiti builds for itself. `LLMConfig` carries only the model and
+    the API credentials, so a Graphiti-built client falls back to the OpenAI library's own default timeout -
+    and a graph extraction generating thousands of tokens on a local model takes far longer than that. The
+    call then dies with "Error in generating LLM response: Request timed out" while the gateway is still
+    happily generating, and the episode fails having burnt the time anyway.
+    """
+    return CappedOutputClient(config=_llm_config(client_id), max_tokens=extraction_output_budget(),
+                              client=AsyncOpenAI(**gateway_client_args()))
 
 
 def unused_reranker() -> OpenAIRerankerClient:
