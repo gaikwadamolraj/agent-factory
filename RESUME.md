@@ -16,7 +16,7 @@ docker compose up -d --build
 
 | What | URL | Notes |
 |---|---|---|
-| ATS UI | http://localhost:3000/ats | `acme.recruiter` / `acme.admin` / `globex.recruiter`, password `Demo@12345` |
+| ATS UI | http://localhost:3000/ats | `acme.recruiter` / `acme.admin` / `globex.recruiter` |
 | Admin console | http://localhost:3002/agent-factory | skills, versions, domain packs, tool catalogue (admin role) |
 | Grafana | http://localhost:3001/grafana | dashboard "ATS Platform Overview" |
 | registry-service | http://localhost:8005 | API directly |
